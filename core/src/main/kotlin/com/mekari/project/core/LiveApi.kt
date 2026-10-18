@@ -36,7 +36,7 @@ import kotlin.coroutines.resumeWithException
  * [MekariApi] over HTTP (SPEC-ANDROID §3). One `send()` applies every per-request rule:
  * - the session cookie is handled by hand (the client has no CookieJar): `sid` is read from the login
  *   response's `Set-Cookie`, kept in the [TokenStore], and sent as `Cookie: sid=<token>`;
- * - `X-Workspace-Id` goes on every request except `/auth/*`, `/health` and `/workspaces*`;
+ * - `X-Workspace-Id` goes on every request except `/auth/…`, `/health` and `/workspaces…`;
  * - a 401 for the token that is still stored clears it and emits [ApiEvent.Unauthorized]; a late 401
  *   for an older token is ignored; login and logout never emit;
  * - a 404 from a scoped collection endpoint while the header was set emits [ApiEvent.WorkspaceLost].
@@ -285,7 +285,7 @@ class LiveApi(
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
 
-        /** Not on `/auth/*` and `/workspaces*` (`/health` is outside `/api/v1` anyway). */
+        /** Not on `/auth/…` and `/workspaces…` (`/health` is outside `/api/v1` anyway). */
         internal fun sendsWorkspaceHeader(path: String): Boolean =
             !(path.startsWith("/auth/") || path == "/workspaces" || path.startsWith("/workspaces/"))
 

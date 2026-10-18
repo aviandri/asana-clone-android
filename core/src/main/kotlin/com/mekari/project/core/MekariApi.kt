@@ -10,7 +10,7 @@ import kotlinx.coroutines.flow.Flow
  * Every failure is an [ApiError], except cancellation, which throws `CancellationException`.
  */
 interface MekariApi {
-    /** `X-Workspace-Id` for later requests; never sent on `/auth/*`, `/health`, `/workspaces*`. */
+    /** `X-Workspace-Id` for later requests; never sent on `/auth/…`, `/health`, `/workspaces…`. */
     suspend fun setWorkspace(id: String?)
 
     /** Hot, buffered; single consumer (AppSession). */
