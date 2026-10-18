@@ -8,8 +8,6 @@ plugins {
 
 kotlin {
     jvmToolchain(17)
-    // runTest helpers (advanceTimeBy, runCurrent, …) are still marked experimental.
-    sourceSets.test { languageSettings.optIn("kotlinx.coroutines.ExperimentalCoroutinesApi") }
     // SerialDescriptor.serialName: used only to name types in decoding-error messages.
     compilerOptions.optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
     // runTest helpers (advanceTimeBy, runCurrent, …) are still marked experimental.
@@ -29,5 +27,8 @@ dependencies {
 
 tasks.test {
     // Contract tests run only when MP_BASE_URL points at a seeded backend (CI `contract` job).
-    environment("MP_BASE_URL", System.getenv("MP_BASE_URL") ?: "")
+    val baseUrl = System.getenv("MP_BASE_URL") ?: ""
+    environment("MP_BASE_URL", baseUrl)
+    // An input, so results cached without a backend (contract tests skipped) are never reused with one.
+    inputs.property("mpBaseUrl", baseUrl)
 }

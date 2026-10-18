@@ -62,7 +62,11 @@ class ProjectStore internal constructor(
         tasks.changes.add(::recompute)
     }
 
-    fun setViewMode(mode: ViewMode) = _state.update { it.copy(viewMode = mode) }
+    /** An explicit choice always wins, even over a first load still in flight. */
+    fun setViewMode(mode: ViewMode) {
+        didChooseInitialMode = true
+        _state.update { it.copy(viewMode = mode) }
+    }
 
     fun setShowCompleted(show: Boolean) {
         _state.update { it.copy(showCompleted = show) }
@@ -73,14 +77,9 @@ class ProjectStore internal constructor(
         if (_state.value.detail == null) _state.update { it.copy(phase = LoadState.Loading) }
         loadVersion += 1
         val mine = loadVersion
+        val isCurrent = { mine > appliedVersion }
         attempt(
-            onError = { e ->
-                if (mine >
-                    appliedVersion
-                ) {
-                    _state.update { it.copy(phase = LoadState.Failed(e), lastError = e) }
-                }
-            },
+            onError = { e -> if (isCurrent()) _state.update { it.copy(phase = LoadState.Failed(e), lastError = e) } },
             onCancel = { _state.update { if (it.phase == LoadState.Loading) it.copy(phase = LoadState.Idle) else it } }
         ) {
             val (loaded, list) = coroutineScope {

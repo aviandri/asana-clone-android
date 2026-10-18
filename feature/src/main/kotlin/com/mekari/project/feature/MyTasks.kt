@@ -30,10 +30,16 @@ class ProjectListStore internal constructor(private val api: MekariApi) {
     /** Fired when the list changes (task detail holders re-derive canEdit). */
     internal val changes = Listeners()
 
+    private var loadVersion = 0
+    private var appliedVersion = 0
+
     suspend fun load() {
         if (_state.value.projects.isEmpty()) _state.update { it.copy(phase = LoadState.Loading) }
+        loadVersion += 1
+        val mine = loadVersion
+        val isCurrent = { mine > appliedVersion }
         attempt(
-            onError = { e -> _state.update { it.copy(phase = LoadState.Failed(e), lastError = e) } },
+            onError = { e -> if (isCurrent()) _state.update { it.copy(phase = LoadState.Failed(e), lastError = e) } },
             onCancel = { _state.update { if (it.phase == LoadState.Loading) it.copy(phase = LoadState.Idle) else it } }
         ) {
             val projects = api.projects(archived = false).sortedWith(
@@ -41,6 +47,8 @@ class ProjectListStore internal constructor(private val api: MekariApi) {
                     it.name
                 }
             )
+            if (mine <= appliedVersion) return // a later load already landed
+            appliedVersion = mine
             _state.update { it.copy(projects = projects, phase = LoadState.Loaded) }
             changes.fire()
         }
