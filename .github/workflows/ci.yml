@@ -127,11 +127,12 @@ jobs:
       - name: Contract tests
         # A skipped contract test (MP_BASE_URL missing) would pass silently, so check they ran.
         run: |
-          ./gradlew :core:test --tests '*ContractTest' --rerun
+          # Gradle applies --tests/--rerun to the task just before them, so each task gets its own.
+          ./gradlew :core:test --tests '*ContractTest' --rerun :feature:test --tests '*ContractTest' --rerun
           python3 - <<'EOF'
           import glob, xml.etree.ElementTree as ET
           tests = skipped = 0
-          for f in glob.glob('core/build/test-results/test/*ContractTest.xml'):
+          for f in glob.glob('*/build/test-results/test/*ContractTest.xml'):
               r = ET.parse(f).getroot()
               tests += int(r.get('tests')); skipped += int(r.get('skipped'))
           print(f'contract tests: {tests} run, {skipped} skipped')

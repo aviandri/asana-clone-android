@@ -296,25 +296,19 @@ class UserSearch internal constructor(private val api: MekariApi, scope: Corouti
     private var generation = 0
 
     /** The UI only sends the query (never binds a TextField to state.query). */
+    private fun searchFailed(error: ApiError) = _state.update { it.copy(lastError = error, isLoading = false) }
+
     fun setQuery(query: String) {
         generation += 1
         val current = generation
         val q = query.trim()
         _state.update { it.copy(query = query, isLoading = true) }
         debouncer.schedule {
-            attempt(onError = { e ->
-                if (current ==
-                    generation
-                ) {
-                    _state.update { it.copy(lastError = e, isLoading = false) }
-                }
-            }) {
-                val found = api.users(q.ifEmpty { null })
-                if (current ==
-                    generation
-                ) {
-                    _state.update { it.copy(results = found, lastError = null, isLoading = false) }
-                }
+            // A newer query is on its way when the generation moved on: drop this answer.
+            val stale = { current != generation }
+            val found = attempt(onError = { e -> if (!stale()) searchFailed(e) }) { api.users(q.ifEmpty { null }) }
+            if (found != null && !stale()) {
+                _state.update { it.copy(results = found, lastError = null, isLoading = false) }
             }
         }
     }

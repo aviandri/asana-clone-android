@@ -231,22 +231,15 @@ class SearchStore internal constructor(private val api: MekariApi, scope: Corout
         }
         _state.update { it.copy(isSearching = true) }
         debouncer.schedule {
-            attempt(onError = { e ->
-                if (current ==
-                    generation
-                ) {
-                    _state.update { it.copy(lastError = e, isSearching = false) }
-                }
-            }) {
-                val found = api.search(q)
-                if (current ==
-                    generation
-                ) {
-                    _state.update { it.copy(results = found, lastError = null, isSearching = false) }
-                }
+            // A newer query is on its way when the generation moved on: drop this answer.
+            val found = attempt(onError = { e -> if (current == generation) searchFailed(e) }) { api.search(q) }
+            if (found != null && current == generation) {
+                _state.update { it.copy(results = found, lastError = null, isSearching = false) }
             }
         }
     }
+
+    private fun searchFailed(error: ApiError) = _state.update { it.copy(lastError = error, isSearching = false) }
 
     /** Projects open as Project targets; people open mailto: in the app. */
     fun target(taskId: String): NavigationTarget =

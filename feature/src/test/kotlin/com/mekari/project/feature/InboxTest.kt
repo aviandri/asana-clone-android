@@ -57,7 +57,9 @@ class InboxTest {
         runCurrent()
         fake.release(FakeEndpoint.NOTIFICATIONS, newest = true)
         newer.join()
-        assertEquals(3, scope.inbox.state.value.notifications.size)
+        assertEquals("the caller of the newer load got its data", 3, scope.inbox.state.value.notifications.size)
+        // The older request answers last (with a different page): it must not replace the newer one.
+        fake.addNotification(notification("n-even-later"), DemoIds.ALICE)
         fake.release(FakeEndpoint.NOTIFICATIONS, all = true)
         older.join()
         assertEquals(3, scope.inbox.state.value.notifications.size)
