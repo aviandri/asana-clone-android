@@ -158,6 +158,20 @@ class ProjectStoreTest {
     }
 
     @Test
+    fun aViewModeChosenDuringTheFirstLoadSticks() = runTest {
+        val fake = demoFake()
+        val scope = workspaceScope(fake)
+        val board = scope.project(DemoIds.BOARD_PROJECT) // defaultView BOARD
+        fake.hold(FakeEndpoint.PROJECT)
+        val load = launch { board.load() }
+        runCurrent()
+        board.setViewMode(ProjectStore.ViewMode.LIST)
+        fake.release(FakeEndpoint.PROJECT, all = true)
+        load.join()
+        assertEquals(ProjectStore.ViewMode.LIST, board.state.value.viewMode)
+    }
+
+    @Test
     fun completedTasksAreHiddenUntilShown() = runTest {
         val (scope, board) = board()
         assertEquals(emptyList<String>(), board.ids(2))

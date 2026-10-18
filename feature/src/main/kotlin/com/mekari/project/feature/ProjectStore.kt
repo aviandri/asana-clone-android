@@ -62,7 +62,11 @@ class ProjectStore internal constructor(
         tasks.changes.add(::recompute)
     }
 
-    fun setViewMode(mode: ViewMode) = _state.update { it.copy(viewMode = mode) }
+    /** An explicit choice always wins, even over a first load still in flight. */
+    fun setViewMode(mode: ViewMode) {
+        didChooseInitialMode = true
+        _state.update { it.copy(viewMode = mode) }
+    }
 
     fun setShowCompleted(show: Boolean) {
         _state.update { it.copy(showCompleted = show) }
