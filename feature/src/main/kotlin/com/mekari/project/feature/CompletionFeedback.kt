@@ -45,7 +45,9 @@ class InMemoryFeaturePrefs(override var celebrationsEnabled: Boolean = true) : F
  */
 class CompletionFeedback internal constructor(
     private val prefs: FeaturePrefs,
-    private val cooldown: CelebrationCooldown
+    private val cooldown: CelebrationCooldown,
+    /** The owning scope was closed: a late confirm must not celebrate or start the app-wide cooldown. */
+    private val isClosed: () -> Boolean = { false }
 ) {
     /** `id` increments per event, so the same celebration twice is still a change. */
     data class Event(val id: Int, val taskId: String, val celebration: Celebration)
@@ -110,7 +112,7 @@ class CompletionFeedback internal constructor(
      * off, or the last event was under the cooldown ago.
      */
     internal fun confirm(taskId: String) {
-        if (tasks?.get(taskId)?.completed != true || !celebrationsEnabled || cooldown.isActive) return
+        if (isClosed() || tasks?.get(taskId)?.completed != true || !celebrationsEnabled || cooldown.isActive) return
         val celebration = celebration(forCompleting = taskId) ?: return
         nextId += 1
         _lastEvent.value = Event(nextId, taskId, celebration)

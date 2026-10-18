@@ -230,7 +230,8 @@ class CommentComposer internal constructor(
     /** The "@word" ending at the cursor → mentionQuery → user search. */
     fun draftChanged(text: String, cursor: Int) {
         val query = mentionQuery(text, cursor)
-        if (query != _state.value.mentionQuery) _state.update { it.copy(mentionQuery = query) }
+        if (query == _state.value.mentionQuery) return // typing elsewhere in the text: no new search
+        _state.update { it.copy(mentionQuery = query) }
         if (query != null) users.setQuery(query)
     }
 

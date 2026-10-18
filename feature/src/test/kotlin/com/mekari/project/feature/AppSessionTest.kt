@@ -154,6 +154,94 @@ class AppSessionTest {
     }
 
     @Test
+    fun switchingAwayAndBackBeforeTheFirstPostAnswersEndsOnTheStart() = runTest {
+        val fake = demoFake()
+        val session = startedSession(fake) // A = Mekari
+        fake.hold(FakeEndpoint.SWITCH_WORKSPACE)
+        val toX = launch { session.switchWorkspace(DemoIds.ACME_PILOT) }
+        runCurrent()
+        val backToA = launch { session.switchWorkspace(DemoIds.MEKARI) } // queued behind X's POST
+        runCurrent()
+        fake.release(FakeEndpoint.SWITCH_WORKSPACE) // X's POST lands: the server now defaults to X
+        toX.join()
+        runCurrent()
+        fake.release(FakeEndpoint.SWITCH_WORKSPACE, all = true)
+        backToA.join()
+        // The app never left A, but the server did: A must still be POSTed.
+        assertEquals(2, fake.calls.count { it.endpoint == FakeEndpoint.SWITCH_WORKSPACE })
+        assertEquals(DemoIds.MEKARI, session.state.value.current?.id)
+        assertEquals(DemoIds.MEKARI, fake.me().currentWorkspace?.id)
+    }
+
+    @Test
+    fun aClosedScopesLateConfirmNeitherCelebratesNorStartsTheCooldown() = runTest {
+        val fake = demoFake()
+        val session = startedSession(fake)
+        val old = session.scope.value!!
+        val board = old.project(DemoIds.BOARD_PROJECT)
+        board.load()
+        val section = board.state.value.sections[1].id
+        val ids = board.state.value.taskIds(section)
+        for (id in ids.dropLast(1)) board.toggleComplete(id)
+        // The last task in the section; the switch lands before its PATCH answers.
+        fake.hold(FakeEndpoint.UPDATE_TASK)
+        val complete = launch { board.toggleComplete(ids.last()) }
+        runCurrent()
+        session.switchWorkspace(DemoIds.ACME_PILOT)
+        assertTrue(old.isClosed)
+        fake.release(FakeEndpoint.UPDATE_TASK, all = true)
+        complete.join()
+        assertNull(old.completionFeedback.lastEvent.value)
+
+        // The first real celebration in the new workspace isn't blocked by a cooldown.
+        val acme = session.scope.value!!
+        val pilot = acme.project(DemoIds.PILOT_PROJECT)
+        pilot.load()
+        val todo = pilot.state.value.sections[0].id
+        for (id in pilot.state.value.taskIds(todo)) pilot.toggleComplete(id)
+        assertTrue(acme.completionFeedback.lastEvent.value?.celebration is Celebration.SectionCleared)
+    }
+
+    @Test
+    fun aRenumberInProgressStopsWhenTheWorkspaceChanges() = runTest {
+        val fake = demoFake()
+        val session = startedSession(fake)
+        val old = session.scope.value!!
+        val board = old.project(DemoIds.BOARD_PROJECT)
+        board.load()
+        val todo = board.state.value.sections[0].id
+        val (push, offline, _, tablet) = board.state.value.taskIds(todo)
+        old.tasks.update(offline, com.mekari.project.core.TaskChanges(position = old.tasks[push]!!.position + 1e-9))
+        fake.hold(FakeEndpoint.UPDATE_TASK)
+        val move = launch { board.move(tablet, todo, before = offline) } // crowded: renumbers the section
+        runCurrent()
+        assertEquals(1, fake.parkedCount(FakeEndpoint.UPDATE_TASK))
+        val before = fake.calls.count { it.endpoint == FakeEndpoint.UPDATE_TASK }
+        session.switchWorkspace(DemoIds.ACME_PILOT)
+        fake.release(FakeEndpoint.UPDATE_TASK, all = true)
+        move.join()
+        runCurrent()
+        assertEquals(
+            "no PATCH goes out after the switch",
+            before,
+            fake.calls.count {
+                it.endpoint ==
+                    FakeEndpoint.UPDATE_TASK
+            }
+        )
+        assertNull("a cancellation, not an error", board.state.value.lastError)
+        // Every other request from the closed scope is refused before it's sent, too.
+        val loads = fake.calls.size
+        try {
+            old.myTasks.refresh()
+            org.junit.Assert.fail("a closed scope's request is refused")
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            // As a cancellation: a ViewModel action just ends, nothing is shown.
+        }
+        assertEquals(loads, fake.calls.size)
+    }
+
+    @Test
     fun lostAccessAdoptsAnotherWorkspace() = runTest {
         val fake = demoFake()
         val session = startedSession(fake)

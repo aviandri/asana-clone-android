@@ -77,14 +77,9 @@ class ProjectStore internal constructor(
         if (_state.value.detail == null) _state.update { it.copy(phase = LoadState.Loading) }
         loadVersion += 1
         val mine = loadVersion
+        val isCurrent = { mine > appliedVersion }
         attempt(
-            onError = { e ->
-                if (mine >
-                    appliedVersion
-                ) {
-                    _state.update { it.copy(phase = LoadState.Failed(e), lastError = e) }
-                }
-            },
+            onError = { e -> if (isCurrent()) _state.update { it.copy(phase = LoadState.Failed(e), lastError = e) } },
             onCancel = { _state.update { if (it.phase == LoadState.Loading) it.copy(phase = LoadState.Idle) else it } }
         ) {
             val (loaded, list) = coroutineScope {

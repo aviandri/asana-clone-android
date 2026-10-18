@@ -8,6 +8,7 @@ import com.mekari.project.core.SearchResults
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.Duration.Companion.seconds
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -41,18 +42,31 @@ class InboxStore internal constructor(private val api: MekariApi) {
     private var version = 0
     private var applied = 0
 
+    /**
+     * A load already in flight is joined, not repeated (switching or coming to the foreground starts the
+     * poller and a refresh at the same moment).
+     */
     suspend fun load() {
+        inFlight?.let { return it.await() }
+        val done = CompletableDeferred<Unit>()
+        inFlight = done
+        try {
+            fetch()
+        } finally {
+            inFlight = null
+            done.complete(Unit)
+        }
+    }
+
+    private var inFlight: CompletableDeferred<Unit>? = null
+
+    private suspend fun fetch() {
         if (_state.value.notifications.isEmpty()) _state.update { it.copy(phase = LoadState.Loading) }
         version += 1
         val mine = version
+        val isCurrent = { mine > applied }
         attempt(
-            onError = { e ->
-                if (mine >
-                    applied
-                ) {
-                    _state.update { it.copy(phase = LoadState.Failed(e), lastError = e) }
-                }
-            },
+            onError = { e -> if (isCurrent()) _state.update { it.copy(phase = LoadState.Failed(e), lastError = e) } },
             onCancel = { _state.update { if (it.phase == LoadState.Loading) it.copy(phase = LoadState.Idle) else it } }
         ) {
             val page = api.notifications(unreadOnly = false, limit = PAGE_SIZE)
@@ -67,43 +81,20 @@ class InboxStore internal constructor(private val api: MekariApi) {
     suspend fun markRead(id: String) {
         val current = _state.value.notifications.firstOrNull { it.id == id } ?: return
         if (current.read) return
-        _state.update { s ->
-            s.copy(
-                notifications = s.notifications.map {
-                    if (it.id ==
-                        id
-                    ) {
-                        it.copy(read = true)
-                    } else {
-                        it
-                    }
-                },
-                unreadCount = maxOf(0, s.unreadCount - 1)
-            )
-        }
+        setRead(id, read = true, unreadDelta = -1)
         version += 1
         applied = version
         val mine = version
         attempt(onError = { e ->
             // Revert only if nothing newer (a reload, another change) replaced this state meanwhile.
-            if (mine == applied) {
-                _state.update { s ->
-                    s.copy(
-                        notifications = s.notifications.map {
-                            if (it.id ==
-                                id
-                            ) {
-                                it.copy(read = false)
-                            } else {
-                                it
-                            }
-                        },
-                        unreadCount = s.unreadCount + 1
-                    )
-                }
-            }
+            if (mine == applied) setRead(id, read = false, unreadDelta = +1)
             _state.update { it.copy(lastError = e) }
         }) { api.markRead(id) }
+    }
+
+    private fun setRead(id: String, read: Boolean, unreadDelta: Int) = _state.update { s ->
+        val notifications = s.notifications.map { if (it.id == id) it.copy(read = read) else it }
+        s.copy(notifications = notifications, unreadCount = maxOf(0, s.unreadCount + unreadDelta))
     }
 
     suspend fun markAllRead() {
@@ -112,14 +103,11 @@ class InboxStore internal constructor(private val api: MekariApi) {
         version += 1
         applied = version
         val mine = version
+        val revert = {
+            _state.update { it.copy(notifications = previous.notifications, unreadCount = previous.unreadCount) }
+        }
         attempt(onError = { e ->
-            if (mine ==
-                applied
-            ) {
-                _state.update {
-                    it.copy(notifications = previous.notifications, unreadCount = previous.unreadCount)
-                }
-            }
+            if (mine == applied) revert() // nothing newer replaced this state meanwhile
             _state.update { it.copy(lastError = e) }
         }) { api.markAllRead() }
     }

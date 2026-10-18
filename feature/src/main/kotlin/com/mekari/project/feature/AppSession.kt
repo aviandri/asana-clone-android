@@ -35,7 +35,7 @@ import kotlinx.coroutines.sync.withLock
 
 /** Everything for the current workspace. A new instance on every switch, so all state resets together. */
 class WorkspaceScope internal constructor(
-    private val api: MekariApi,
+    sessionApi: MekariApi,
     val workspace: Workspace,
     val me: UserSummary,
     parent: CoroutineScope,
@@ -43,6 +43,12 @@ class WorkspaceScope internal constructor(
     prefs: FeaturePrefs,
     cooldown: CelebrationCooldown
 ) {
+    /** Every request from this scope; refused once the scope is closed (see [ScopedApi]). */
+    private val api = ScopedApi(sessionApi)
+
+    /** True once this workspace was left (switch, lost access, sign-out). */
+    val isClosed: Boolean get() = api.closed
+
     /** Poller, linger and cooldown timers, debouncers: cancelled with the scope. */
     internal val coroutineScope = CoroutineScope(parent.coroutineContext + SupervisorJob(parent.coroutineContext[Job]))
 
@@ -54,7 +60,7 @@ class WorkspaceScope internal constructor(
     val poller = NotificationPoller(inbox, coroutineScope)
     val search = SearchStore(api, coroutineScope)
     val quickAdd = QuickAddModel(api, me, myTasks)
-    val completionFeedback = CompletionFeedback(prefs, cooldown)
+    val completionFeedback = CompletionFeedback(prefs, cooldown) { api.closed }
 
     private val projectStores = mutableMapOf<String, ProjectStore>()
     private val detailStores = mutableMapOf<String, TaskDetailStore>()
@@ -100,7 +106,9 @@ class WorkspaceScope internal constructor(
         }
     }
 
+    /** Nothing from this scope reaches the server or the app-wide cooldown afterwards. */
     internal fun close() {
+        api.close()
         poller.stop()
         coroutineScope.cancel()
     }
@@ -398,8 +406,9 @@ class AppSession(
 
     /** Signed in as [me]: header, scope and generation change together. */
     private suspend fun adopt(me: Me, api: MekariApi) {
-        api.setWorkspace(me.currentWorkspace?.id)
+        // Close first: the old scope's requests stop before the header names the next workspace.
         _scope.value?.close()
+        api.setWorkspace(me.currentWorkspace?.id)
         val scope = me.currentWorkspace?.let {
             WorkspaceScope(api, it, me.user.summary, appScope, clock, prefs, celebrationCooldown)
         }

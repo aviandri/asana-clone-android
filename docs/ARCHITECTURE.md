@@ -35,8 +35,12 @@ Both libraries build and unit-test on the JVM (`./gradlew :core:test :feature:te
 - **Time:** debounce, polling, linger and cooldown use coroutine `delay`, so tests run on virtual
   time (`advanceTimeBy`). "Today" comes from an injected `java.time.Clock` (its zone included).
 - **Lifetime:** `AppSession` runs on an app-level `CoroutineScope` that the app hands in. Each
-  `WorkspaceScope` owns a child scope (poller, linger and cooldown timers, derived flows), which is
-  cancelled when the workspace changes or on sign-out. Nothing outlives its workspace.
+  `WorkspaceScope` owns a child scope (poller, linger timers, debouncers), which is
+  cancelled when the workspace changes or on sign-out; the celebration cooldown belongs to `AppSession`
+  (app-wide). Work launched elsewhere (a ViewModel action, a renumber loop) can't outlive it either:
+  the scope's API client refuses every request once the scope is closed (as a cancellation, before it
+  is sent), the old scope closes BEFORE the header changes, and a late `confirm()` from a closed scope
+  neither celebrates nor starts the cooldown.
 
 ## 1. :core: models
 

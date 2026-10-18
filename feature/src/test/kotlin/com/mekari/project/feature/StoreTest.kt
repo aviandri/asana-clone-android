@@ -129,6 +129,28 @@ class MyTasksStoreTest {
     }
 }
 
+class ProjectListStoreTest {
+    @Test
+    fun anOlderFailedLoadAfterANewerOneIsIgnored() = runTest {
+        val fake = demoFake()
+        val scope = workspaceScope(fake)
+        fake.hold(FakeEndpoint.PROJECTS)
+        val older = launch { scope.projects.load() }
+        runCurrent()
+        val newer = launch { scope.projects.load() }
+        runCurrent()
+        fake.release(FakeEndpoint.PROJECTS, newest = true)
+        newer.join()
+        assertEquals(LoadState.Loaded, scope.projects.state.value.phase)
+        fake.failNext(FakeEndpoint.PROJECTS, ApiError.transport())
+        fake.release(FakeEndpoint.PROJECTS, all = true)
+        older.join()
+        assertEquals(LoadState.Loaded, scope.projects.state.value.phase)
+        assertNull(scope.projects.state.value.lastError)
+        assertEquals(2, scope.projects.state.value.projects.size)
+    }
+}
+
 class ProjectStoreTest {
     private suspend fun kotlinx.coroutines.test.TestScope.board(
         fake: com.mekari.project.core.fake.FakeApi = demoFake()

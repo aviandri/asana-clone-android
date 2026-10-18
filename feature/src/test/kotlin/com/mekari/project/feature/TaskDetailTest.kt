@@ -142,7 +142,8 @@ class TaskDetailTest {
 
     @Test
     fun theComposerFindsMentionsAtTheCursorAndKeepsTheUiInChargeOfTheText() = runTest {
-        val scope = workspaceScope()
+        val fake = demoFake()
+        val scope = workspaceScope(fake)
         val detail = scope.taskDetail(DemoIds.TASK_WITH_STORIES)
         detail.load()
         val composer = detail.composer
@@ -159,6 +160,14 @@ class TaskDetailTest {
         runCurrent()
         val bobPick = composer.users.state.value.results.single()
         assertEquals("Bob Smith", bobPick.name)
+
+        // Typing elsewhere with the same mention at the cursor doesn't search again.
+        val searches = fake.calls.count { it.endpoint == FakeEndpoint.USERS }
+        composer.draftChanged("Ping @bo", 8)
+        composer.draftChanged("Ping @bo", 8)
+        advanceTimeBy(251)
+        runCurrent()
+        assertEquals(searches, fake.calls.count { it.endpoint == FakeEndpoint.USERS })
 
         val (text, cursor) = composer.insertMention(bobPick, "Ping @bo and more", 8)
         assertEquals("Ping @[Bob Smith](${DemoIds.BOB})  and more", text)
