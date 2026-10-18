@@ -296,6 +296,8 @@ class UserSearch internal constructor(private val api: MekariApi, scope: Corouti
     private val debouncer = Debouncer(scope, 250.milliseconds)
     private var generation = 0
 
+    fun clearError() = _state.update { it.copy(lastError = null) }
+
     /** The UI only sends the query (never binds a TextField to state.query). */
     private fun searchFailed(error: ApiError) = _state.update { it.copy(lastError = error, isLoading = false) }
 

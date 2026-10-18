@@ -161,6 +161,28 @@ class InboxTest {
         assertTrue("the stale 'mobile' answer is dropped", search.state.value.isEmpty)
     }
 
+    @Test
+    fun searchAndUserSearchErrorsCanBeCleared() = runTest {
+        val fake = demoFake()
+        val scope = workspaceScope(fake)
+        fake.failNext(FakeEndpoint.SEARCH, ApiError.transport())
+        scope.search.setQuery("login")
+        advanceTimeBy(251)
+        runCurrent()
+        assertEquals(ApiError.Code.TRANSPORT, scope.search.state.value.lastError?.code)
+        scope.search.clearError()
+        assertNull(scope.search.state.value.lastError)
+
+        val users = scope.userSearch()
+        fake.failNext(FakeEndpoint.USERS, ApiError.transport())
+        users.setQuery("bo")
+        advanceTimeBy(251)
+        runCurrent()
+        assertEquals(ApiError.Code.TRANSPORT, users.state.value.lastError?.code)
+        users.clearError()
+        assertNull(users.state.value.lastError)
+    }
+
     private fun notification(id: String) = InboxNotification(
         id,
         DemoIds.MEKARI,
