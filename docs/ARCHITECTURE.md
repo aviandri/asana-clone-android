@@ -354,7 +354,9 @@ class AppSession(
 
   companion object {
     fun preview(signedIn: Boolean = true, asEmail: String = "alice@example.com", appScope: CoroutineScope): AppSession
-    fun uiTest(signedIn: Boolean, appScope: CoroutineScope): AppSession   // the fake-API launch flag; any server URL
+    fun uiTest(signedIn: Boolean, appScope: CoroutineScope, fake: FakeApi = FakeApi(signedInAs = null)): AppSession
+                                                         // the fake-API launch flag; any server URL. Pass your own `fake` to drive
+                                                         // failNext/hold/release from Robolectric and instrumented tests
   }
 }
 data class SessionState(
@@ -393,7 +395,8 @@ class WorkspaceScope {                                   // built by AppSession;
   fun taskDetail(id: String): TaskDetailStore            // cached per id; its role is seeded from `projects`
   fun userSearch(): UserSearch                           // new instance each time
   fun canEdit(task: TaskItem): Boolean                   // personal tasks / workspace admin: yes; a project task only if its project
-                                                         // is known and I'm not COMMENTER (fail closed); read-only checkboxes swallow taps
+                                                         // is known and I'm not COMMENTER (fail closed); read-only checkboxes swallow taps.
+                                                         // Reads `projects.state`: collect it, so rows recompose when roles arrive
   suspend fun refresh()                                  // on foreground: My Tasks + projects + inbox
 }
 ```
@@ -506,13 +509,17 @@ fun clearError()
   - fail closed (read-only) while neither knows the project.
 
 ```kotlin
+/** The UI owns the comment text (a TextField bound to a StateFlow drops characters). Storage form:
+ *  mentions as "@[Name](id)" in the text the UI holds; render them with a VisualTransformation. */
 class CommentComposer {
-  data class State(val draft: String, val mentionQuery: String?, val canSend: Boolean, val isSending: Boolean, val lastError: ApiError?)
+  data class State(val mentionQuery: String?, val isSending: Boolean, val lastError: ApiError?)
   val state: StateFlow<State>
   val users: UserSearch                                  // follows mentionQuery
-  fun setDraft(text: String)                             // storage form: mentions as "@[Name](id)"
-  fun insertMention(user: PickableUser)                  // replaces the trailing "@word"
-  suspend fun send()                                     // keeps text typed while sending; appends the comment; clears the draft
+  fun draftChanged(text: String, cursor: Int)            // the "@word" ending at the cursor → mentionQuery → users
+  fun insertMention(user: PickableUser, text: String, cursor: Int): Pair<String, Int>   // new text + cursor after "@[Name](id) "
+  fun canSend(text: String): Boolean
+  suspend fun send(body: String): Boolean                // true when sent (the comment is appended to stories); the UI then
+                                                         // clears its text only if it's unchanged
 }
 class UserSearch {                                       // assignee, followers, mentions
   data class State(val query: String, val results: List<PickableUser>, val isLoading: Boolean, val lastError: ApiError?)
@@ -550,9 +557,10 @@ fun target(taskId: String): NavigationTarget             // people open mailto: 
 ### QuickAddModel (FAB + launcher shortcut)
 
 ```kotlin
-data class QuickAddState(val title: String, val dueDate: LocalDate?, val isSubmitting: Boolean, val canSubmit: Boolean, val lastError: ApiError?)
-fun setTitle(title: String); fun setDueDate(date: LocalDate?)
-suspend fun submit(): Boolean                            // personal task assigned to me; true on success (clears); My Tasks updates
+data class QuickAddState(val isSubmitting: Boolean, val lastError: ApiError?)   // the UI owns title + date
+fun canSubmit(title: String): Boolean
+suspend fun submit(title: String, dueDate: LocalDate?): Boolean   // personal task assigned to me; true on success (the UI clears
+                                                                  // its fields if unchanged); My Tasks updates
 ```
 
 ### CompletionFeedback (Mac 0.1.1 rules)
@@ -607,8 +615,10 @@ class CompletionFeedback {
 1. **One current workspace per app**, shared by every screen and the background worker (SPEC-ANDROID §3).
 2. **Open enums are value classes over the raw string**, not Kotlin `enum`s. Unknown values round-trip, and `when` needs an `else`.
 3. **State holders are main-confined plain classes, not ViewModels.** `:app` wraps them in ViewModels. They expose one state data class each, so Compose recomposes on one flow, and they never touch Android.
-4. **Add fields keep their text in the UI**, never in a store (the Mac crash lesson: never push text into a
-   focused field). `addTask`/`submit` return `true` once the row is in, and the UI clears its field then.
-   Only the comment composer keeps a draft in its store. `addTask` waits for the server, because ids come
+4. **Text the user types lives in the UI**, never in store state (the Mac crash lesson: never push text into a
+   focused field; on Android a TextField bound to a StateFlow drops characters). That covers add fields,
+   quick add, the comment composer, and the search and user-search queries, which the UI only *sends*
+   via `setQuery`. `addTask`/`submit`/`send` return `true` once the result is in, and the UI then clears
+   its field if the text is unchanged. `addTask` waits for the server, because ids come
    from the BE: there are no temporary rows.
 5. **`TokenStore` and `ServerSettings` are synchronous.** The app's DataStore/Keystore implementations read once at launch and write through; OkHttp interceptors can't suspend.
