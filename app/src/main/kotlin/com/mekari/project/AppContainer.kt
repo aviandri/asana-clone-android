@@ -7,6 +7,7 @@ import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
 import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
@@ -29,6 +30,7 @@ import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -150,39 +152,32 @@ class AppContainer(private val context: Context) {
     }
 
     private val tokenStore: TokenStore by lazy {
-        object : TokenStore {
-            private var token: String? = stored[Keys.TOKEN]?.let { sealed ->
-                SessionCipher.decrypt(sealed) ?: run {
-                    // Unreadable (key lost after a restore, or corrupt): start signed out, and drop both.
-                    SessionCipher.deleteKey()
-                    write { it.remove(Keys.TOKEN) }
-                    null
-                }
-            }
-
-            override fun load(): String? = token
-
-            override fun save(token: String) {
-                this.token = token
-                val sealed = SessionCipher.encrypt(token)
-                // A Keystore failure keeps the token for this run only, rather than failing sign-in.
-                write { if (sealed != null) it[Keys.TOKEN] = sealed else it.remove(Keys.TOKEN) }
-            }
-
-            override fun clear() {
-                token = null
+        val initial = stored[Keys.TOKEN]?.let { sealed ->
+            SessionCipher.decrypt(sealed) ?: run {
+                // Unreadable (key lost after a restore, or corrupt): start signed out, and drop both.
+                SessionCipher.deleteKey()
                 write { it.remove(Keys.TOKEN) }
+                null
             }
+        }
+        PersistentTokenStore(initial) { token ->
+            // A Keystore failure keeps the token for this run only (in memory), rather than failing sign-in.
+            val sealed = token?.let { SessionCipher.encrypt(it) }
+            write { if (sealed != null) it[Keys.TOKEN] = sealed else it.remove(Keys.TOKEN) }
         }
     }
 
+    /** Every DataStore change, in the order asked for, applied by one coroutine (see [write]). */
+    private val writes = Channel<(MutablePreferences) -> Unit>(Channel.UNLIMITED).also { queue ->
+        appScope.launch { for (change in queue) context.dataStore.edit { change(it) } }
+    }
+
     /**
-     * Writes in the order they were asked for: each launch runs to `edit()` at once on Main.immediate, and
-     * DataStore applies edits in call order (so a sign-out can't land before the sign-in it follows).
-     * DataStore does its own I/O off the main thread.
+     * Enqueues a change; changes reach DataStore strictly in call order, from any thread (the token's
+     * clearIf runs on OkHttp's thread, a sign-in's save on main). DataStore does its own I/O off main.
      */
-    private fun write(change: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
-        appScope.launch { context.dataStore.edit { change(it) } }
+    private fun write(change: (MutablePreferences) -> Unit) {
+        writes.trySend(change)
     }
 
     private object Keys {
