@@ -49,6 +49,12 @@ kotlin {
     jvmToolchain(17)
 }
 
+composeCompiler {
+    // :core models are immutable but can't carry @Immutable (no Compose in :core): rows of them skip
+    // recomposition when unchanged (ARCHITECTURE.md, TaskCache).
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("app/compose-stability.conf"))
+}
+
 dependencies {
     implementation(project(":feature"))
     implementation(libs.kotlinx.coroutines.android)
