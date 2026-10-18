@@ -15,6 +15,7 @@ navigation = "2.8.5"
 datastore = "1.1.1"
 work = "2.10.0"
 splashscreen = "1.0.1"
+browser = "1.8.0"
 junit4 = "4.13.2"
 turbine = "1.2.0"
 robolectric = "4.14.1"
@@ -47,6 +48,8 @@ androidx-navigation-compose = { module = "androidx.navigation:navigation-compose
 androidx-datastore-preferences = { module = "androidx.datastore:datastore-preferences", version.ref = "datastore" }
 androidx-work-runtime = { module = "androidx.work:work-runtime-ktx", version.ref = "work" }
 androidx-core-splashscreen = { module = "androidx.core:core-splashscreen", version.ref = "splashscreen" }
+# Custom Tabs for "Open in browser" (approved; SPEC-ANDROID §2)
+androidx-browser = { module = "androidx.browser:browser", version.ref = "browser" }
 # Tests
 junit4 = { module = "junit:junit", version.ref = "junit4" }
 turbine = { module = "app.cash.turbine:turbine", version.ref = "turbine" }

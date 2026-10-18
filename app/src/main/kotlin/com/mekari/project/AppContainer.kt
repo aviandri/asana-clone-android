@@ -12,10 +12,12 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
+import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
+import com.mekari.project.core.DeepLink
 import com.mekari.project.core.LiveApi
 import com.mekari.project.core.ServerSettings
 import com.mekari.project.core.TokenStore
@@ -43,6 +45,11 @@ private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(na
 
 class MekariApplication : Application() {
     val container: AppContainer by lazy { AppContainer(this) }
+
+    override fun onCreate() {
+        super.onCreate()
+        InboxNotifications.createChannel(this)
+    }
 }
 
 val Context.container: AppContainer get() = (applicationContext as MekariApplication).container
@@ -89,12 +96,30 @@ class AppContainer(private val context: Context) {
     fun setNotifications(on: Boolean) {
         _prefs.update { it.copy(notificationsEnabled = on) }
         write { it[Keys.NOTIFICATIONS] = on }
+        if (liveSession) updateBackgroundCheck(signedIn = currentSession?.state?.value?.me != null)
     }
+
+    /** Whether to ask for the notification permission (once per install, after the first sign-in). */
+    fun shouldAskNotificationPermission(): Boolean = !askedNotifications
+
+    fun markNotificationPermissionAsked() {
+        askedNotifications = true
+        write { it[Keys.ASKED_NOTIFICATIONS] = true }
+    }
+
+    private var askedNotifications: Boolean = false
+        get() = field || (stored[Keys.ASKED_NOTIFICATIONS] ?: false)
 
     fun setCompletionSound(on: Boolean) {
         _prefs.update { it.copy(completionSound = on) }
         write { it[Keys.SOUND] = on }
     }
+
+    /** A mekariproject:// link (or a notification tap) waiting for the signed-in shell to open it. */
+    val pendingLink = MutableStateFlow<DeepLink?>(null)
+
+    /** The launcher's quick-add shortcut, waiting for the shell. */
+    val pendingQuickAdd = MutableStateFlow(false)
 
     private var currentSession: AppSession? = null
 
@@ -108,9 +133,49 @@ class AppContainer(private val context: Context) {
             AppSession(serverSettings, tokenStore, { url, tokens -> LiveApi(url, tokens) }, featurePrefs, appScope)
         }
         currentSession = session
+        liveSession = !fakeApi
         appScope.launch { session.start() }
         followForeground(session)
+        // Background inbox checks: live sessions only (the fake API never schedules WorkManager).
+        if (!fakeApi) {
+            appScope.launch {
+                session.state.collect { state -> updateBackgroundCheck(signedIn = state.me != null) }
+            }
+        }
         return session
+    }
+
+    private var liveSession = false
+
+    private fun updateBackgroundCheck(signedIn: Boolean) {
+        if (signedIn && _prefs.value.notificationsEnabled) {
+            InboxNotifications.schedule(context)
+        } else {
+            InboxNotifications.cancel(context)
+        }
+    }
+
+    /**
+     * The background check (InboxCheckWorker): the stored session against the server, its current workspace's
+     * unread items, diffed against the ids seen last time. Null when there's no session or the call fails.
+     */
+    suspend fun checkInbox(): List<com.mekari.project.feature.LocalNotice>? {
+        val server = serverSettings.serverUrl ?: return null
+        if (tokenStore.load() == null) return null
+        return try {
+            val api = LiveApi(server, tokenStore)
+            val workspace = api.me().currentWorkspace ?: return null
+            api.setWorkspace(workspace.id)
+            val page = api.notifications(unreadOnly = true)
+            val previous = context.dataStore.data.first()[Keys.SEEN]
+            val (notices, seen) = diffInbox(previous, page)
+            write { it[Keys.SEEN] = seen }
+            notices
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
     }
 
     /**
@@ -186,6 +251,8 @@ class AppContainer(private val context: Context) {
         val CELEBRATIONS = booleanPreferencesKey("celebrationsEnabled")
         val NOTIFICATIONS = booleanPreferencesKey("notificationsEnabled")
         val SOUND = booleanPreferencesKey("completionSound")
+        val SEEN = stringSetPreferencesKey("seenUnreadNotifications")
+        val ASKED_NOTIFICATIONS = booleanPreferencesKey("askedNotificationPermission")
     }
 }
 

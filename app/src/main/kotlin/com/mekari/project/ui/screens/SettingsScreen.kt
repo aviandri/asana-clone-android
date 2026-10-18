@@ -34,6 +34,7 @@ import com.mekari.project.TestTags
 import com.mekari.project.feature.AppSession
 import com.mekari.project.ui.LocalAppScope
 import com.mekari.project.ui.launchAction
+import com.mekari.project.ui.rememberNotificationPermissionRequest
 
 /** The app's snackbar host, for holders' transient errors (null in isolated previews). */
 val LocalSnackbarHost = staticCompositionLocalOf<SnackbarHostState?> { null }
@@ -45,6 +46,7 @@ fun SettingsScreen(session: AppSession, container: AppContainer, onBack: () -> U
     val state by session.state.collectAsStateWithLifecycle()
     val prefs by container.prefs.collectAsStateWithLifecycle()
     val appScope = LocalAppScope.current
+    val requestPermission = rememberNotificationPermissionRequest()
     // FeaturePrefs isn't observable: mirror it locally so the switch moves when tapped.
     var celebrations by remember { mutableStateOf(container.featurePrefs.celebrationsEnabled) }
 
@@ -75,6 +77,7 @@ fun SettingsScreen(session: AppSession, container: AppContainer, onBack: () -> U
             HorizontalDivider()
             SwitchRow("Notifications", "New inbox items while you're away", prefs.notificationsEnabled) {
                 container.setNotifications(it)
+                if (it) requestPermission()
             }
             SwitchRow("Sound", "A soft tick when you complete a task", prefs.completionSound) {
                 container.setCompletionSound(it)

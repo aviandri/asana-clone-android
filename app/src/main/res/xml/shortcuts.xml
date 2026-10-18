@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Launcher long-press: "New task" opens quick add (SPEC-ANDROID §5). -->
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+  <shortcut
+    android:enabled="true"
+    android:icon="@drawable/ic_shortcut_add"
+    android:shortcutId="quick_add"
+    android:shortcutShortLabel="@string/shortcut_quick_add_short"
+    android:shortcutLongLabel="@string/shortcut_quick_add_long">
+    <intent
+      android:action="com.mekari.project.QUICK_ADD"
+      android:targetClass="com.mekari.project.MainActivity"
+      android:targetPackage="com.mekari.project" />
+  </shortcut>
+</shortcuts>
