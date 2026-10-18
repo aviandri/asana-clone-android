@@ -85,6 +85,14 @@ class IntentHandlingTest : AppFlowTestBase() {
         assertEquals("", compose.onNodeWithTagText(TestTags.QUICK_ADD_FIELD))
     }
 
+    /** The fake API (UI tests, QA demos) never pops the notification permission dialog over the app. */
+    @Test
+    fun theFakeApiNeverAsksForTheNotificationPermission() {
+        launch()
+        waitForTag(TestTags.MY_TASKS)
+        assertFalse(container.shouldAskNotificationPermission())
+    }
+
     @Test
     fun deepLinkParsingIsUuidOnly() {
         assertEquals(

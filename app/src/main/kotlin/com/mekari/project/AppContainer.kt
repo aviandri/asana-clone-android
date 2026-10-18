@@ -99,8 +99,12 @@ class AppContainer(private val context: Context) {
         if (liveSession) updateBackgroundCheck(signedIn = currentSession?.state?.value?.me != null)
     }
 
-    /** Whether to ask for the notification permission (once per install, after the first sign-in). */
-    fun shouldAskNotificationPermission(): Boolean = !askedNotifications
+    /**
+     * Whether to ask for the notification permission (once per install, after the first sign-in). Never on the
+     * fake API: UI tests and QA demos would get a system dialog over the app (the Mac disables its notifier
+     * in UI tests too), and fake sessions never schedule background checks anyway.
+     */
+    fun shouldAskNotificationPermission(): Boolean = liveSession && !askedNotifications
 
     fun markNotificationPermissionAsked() {
         askedNotifications = true
