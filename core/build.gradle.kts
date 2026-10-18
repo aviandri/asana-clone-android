@@ -10,6 +10,8 @@ kotlin {
     jvmToolchain(17)
     // SerialDescriptor.serialName: used only to name types in decoding-error messages.
     compilerOptions.optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
+    // runTest helpers (advanceTimeBy, runCurrent, …) are still marked experimental.
+    sourceSets.test { languageSettings.optIn("kotlinx.coroutines.ExperimentalCoroutinesApi") }
 }
 
 dependencies {

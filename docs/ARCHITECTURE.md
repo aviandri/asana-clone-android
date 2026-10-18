@@ -226,7 +226,7 @@ class LiveApi(serverUrl: String, tokens: TokenStore, client: OkHttpClient = Live
   - Every request sends `Cookie: sid=<token>`.
 - **401 race:** each request remembers the token it was sent with. A 401 clears the token and emits `Unauthorized` **only if that token is still the stored one**. A late 401 for an older token (the poller, a request from before a re-login) is ignored. `login` and `logout` never emit it.
 - **Lost access:** a 404 on a *scoped collection* path while the header is set emits `WorkspaceLost(header)`, then throws as usual. The paths are the web FE's list: `/users`, `/projects`, `/me/tasks`, `POST /tasks`, `/notifications`, `/notifications/read-all` and `/search`.
-- **Errors:** the BE envelope decodes into `ApiError`. A decoding failure names the JSON path, e.g. `$.data[0].dueDate: …`.
+- **Errors:** the BE envelope decodes into `ApiError`. A decoding failure names the type and the problem: kotlinx's own errors include the JSON path (`$.data[0].position`); the strict date/time serializers name the bad value (`Expected YYYY-MM-DD, got "…"`).
 - **Cancellation:** cancelling the coroutine cancels the OkHttp call and throws `CancellationException`, never an `ApiError`.
 - No retries and no caching in v1.
 

@@ -293,11 +293,17 @@ class LiveApi(
             try {
                 decode(raw.body)
             } catch (e: SerializationException) {
-                throw ApiError.decoding("$what: ${e.message?.lineSequence()?.firstOrNull()}")
+                throw ApiError.decoding("$what: ${describe(e)}")
             } catch (e: IllegalArgumentException) {
-                throw ApiError.decoding("$what: ${e.message?.lineSequence()?.firstOrNull()}")
+                throw ApiError.decoding("$what: ${describe(e)}")
             }
         }
+
+    /** The failure and where (kotlinx's "at path: $.data[0].dueDate"), without echoing the JSON input. */
+    private fun describe(e: Exception): String = e.message.orEmpty().lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("JSON input") && !it.startsWith("Use 'ignoreUnknownKeys'") }
+        .joinToString(" ")
 
     companion object {
         const val WORKSPACE_HEADER = "X-Workspace-Id"
