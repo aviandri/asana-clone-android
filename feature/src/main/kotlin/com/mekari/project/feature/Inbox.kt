@@ -229,6 +229,8 @@ class SearchStore internal constructor(private val api: MekariApi, scope: Corout
 
     private fun searchFailed(error: ApiError) = _state.update { it.copy(lastError = error, isSearching = false) }
 
+    fun clearError() = _state.update { it.copy(lastError = null) }
+
     /** Projects open as Project targets; people open mailto: in the app. */
     fun target(taskId: String): NavigationTarget =
         NavigationTarget.Task(taskId, _state.value.results?.tasks?.firstOrNull { it.id == taskId }?.projectId)

@@ -534,6 +534,7 @@ class UserSearch {                                       // assignee, followers,
   data class State(val query: String, val results: List<PickableUser>, val isLoading: Boolean, val lastError: ApiError?)
   val state: StateFlow<State>
   fun setQuery(query: String)                            // debounced 250 ms → GET /users?q=; role → "Guest" badge (W8)
+  fun clearError()
 }
 ```
 
@@ -560,6 +561,7 @@ The background check is the app's WorkManager job (15 min). It uses `LiveApi` di
 ```kotlin
 data class SearchStore.State(val query: String, val results: SearchResults?, val isSearching: Boolean, val lastError: ApiError?) { val isEmpty: Boolean }
 fun setQuery(query: String)                              // min 2 chars, debounced 250 ms; stale responses dropped
+fun clearError()
 fun target(taskId: String): NavigationTarget             // people open mailto: in the app
 ```
 
