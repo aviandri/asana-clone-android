@@ -33,9 +33,10 @@ wins. Ask the orchestrator before diverging from either.
   - `:app`: Compose UI, Android ViewModel adapters, DataStore, Keystore, WorkManager, notifications.
   Same split as the Mac Kit / Features / App.
 - Libraries:
-  - OkHttp 4.12 + Retrofit 2.11 + kotlinx.serialization 1.7, with kotlinx-coroutines 1.9 for async;
+  - OkHttp 4.12 (no Retrofit: `LiveApi` sends every request through one function, as the Mac client does) + kotlinx.serialization 1.7, with kotlinx-coroutines 1.9 for async;
   - AndroidX Navigation Compose, Lifecycle (ViewModel, `collectAsStateWithLifecycle`), DataStore (prefs), WorkManager 2.10, Core SplashScreen.
   - No DI framework: a manual `AppContainer`.
+  - Test-only: JUnit 4, kotlinx-coroutines-test, Turbine, Robolectric, and OkHttp MockWebServer 4.12 (`:core` LiveApi tests).
   - Anything else needs orchestrator approval.
 - App id **`com.mekari.project`**, name **Mekari Project**. Brand: accent `#E0257F`. The adaptive icon is the magenta gradient tile (`#B0136B → #E0257F → #FF5FA2`) from the web favicon. Light/dark from the system; dynamic colour off, so brand colours are used.
 

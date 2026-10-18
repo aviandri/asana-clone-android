@@ -11,7 +11,7 @@ Status: under construction (scaffold).
 ## Layout
 | Module | What | Depends on |
 |---|---|---|
-| `:core` | models, API client, token store interface. Pure Kotlin/JVM, no Android imports | coroutines, kotlinx.serialization, OkHttp, Retrofit |
+| `:core` | models, API client, token store interface. Pure Kotlin/JVM, no Android imports | coroutines, kotlinx.serialization, OkHttp |
 | `:feature` | state holders / view models, TaskCache, workspace switching, completion feedback. Pure Kotlin/JVM | `:core`, coroutines |
 | `:app` | Compose UI (Material 3), Android ViewModel adapters, DataStore, Keystore, WorkManager, notifications | `:feature` |
 
