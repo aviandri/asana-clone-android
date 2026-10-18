@@ -37,6 +37,8 @@ class LiveApiTest {
     private lateinit var api: LiveApi
 
     private val user = """{"id":"u1","name":"Alice","email":"alice@example.com","avatarColor":"#e8384f"}"""
+    private val task = """{"id":"50000000-0000-4000-8000-000000000001","workspaceId":"w1","title":"x","creator":$user,
+        "createdAt":"2026-10-01T02:00:00Z","updatedAt":"2026-10-01T02:00:00Z"}"""
     private val me = """{"id":"u1","name":"Alice","email":"alice@example.com","avatarColor":"#e8384f","role":"MEMBER",
         "isActive":true,"createdAt":"2026-10-01T02:00:00Z","currentWorkspace":null,"workspaces":[]}"""
 
@@ -99,7 +101,7 @@ class LiveApiTest {
         server.enqueue(json(me))
         server.enqueue(
             json(
-                """{"id":"w2","name":"W","isOrganization":false,"color":"#000","myRole":"MEMBER","memberCount":1,"createdAt":"2026-10-01T02:00:00Z"}"""
+                """{"id":"10000000-0000-4000-8000-000000000002","name":"W","isOrganization":false,"color":"#000","myRole":"MEMBER","memberCount":1,"createdAt":"2026-10-01T02:00:00Z"}"""
             )
         )
         server.enqueue(MockResponse().setResponseCode(200))
@@ -109,20 +111,26 @@ class LiveApiTest {
         api.users("al")
         api.search("fix & ship c++")
         api.me()
-        api.switchWorkspace("w2")
+        api.switchWorkspace("10000000-0000-4000-8000-000000000002")
         api.health()
 
         val projects = server.takeRequest()
         assertEquals("w1", projects.getHeader(LiveApi.WORKSPACE_HEADER))
         assertEquals("/api/v1/projects?archived=false", projects.path)
-        assertEquals("/api/v1/me/tasks?completed=false", server.takeRequest().path)
-        assertEquals("/api/v1/users?q=al", server.takeRequest().path)
-        assertEquals("/api/v1/search?q=fix%20%26%20ship%20c%2B%2B", server.takeRequest().path)
+        for (path in listOf(
+            "/api/v1/me/tasks?completed=false",
+            "/api/v1/users?q=al",
+            "/api/v1/search?q=fix%20%26%20ship%20c%2B%2B"
+        )) {
+            val request = server.takeRequest()
+            assertEquals(path, request.path)
+            assertEquals(path, "w1", request.getHeader(LiveApi.WORKSPACE_HEADER))
+        }
         val meRequest = server.takeRequest()
         assertEquals("/api/v1/auth/me", meRequest.path)
         assertNull(meRequest.getHeader(LiveApi.WORKSPACE_HEADER))
         val switch = server.takeRequest()
-        assertEquals("/api/v1/workspaces/w2/switch", switch.path)
+        assertEquals("/api/v1/workspaces/10000000-0000-4000-8000-000000000002/switch", switch.path)
         assertNull(switch.getHeader(LiveApi.WORKSPACE_HEADER))
         assertEquals("/health", server.takeRequest().path)
     }
@@ -151,6 +159,7 @@ class LiveApiTest {
             override fun clear() {
                 token = null
             }
+            override fun clearIf(expected: String): Boolean = (token == expected).also { if (it) token = null }
         }
         val late = LiveApi(server.url("/").toString(), swapping, client, decodeDispatcher = Dispatchers.Unconfined)
         server.enqueue(error(401, "UNAUTHORIZED"))
@@ -160,6 +169,54 @@ class LiveApiTest {
         }
         assertEquals("sid=old", server.takeRequest().getHeader("Cookie"))
         assertEquals("new", swapping.token)
+    }
+
+    @Test
+    fun aReloginLandingRightBeforeTheClearKeepsTheFreshToken() = runBlocking {
+        // The 401 for "old" arrives; a re-login's save("new") lands between the decision and the clear.
+        // compare-and-clear is atomic, so the fresh token survives and nobody is signed out.
+        val race = object : TokenStore {
+            val inner = InMemoryTokenStore("old")
+            override fun load() = inner.load()
+            override fun save(token: String) = inner.save(token)
+            override fun clear() = inner.clear()
+            override fun clearIf(expected: String): Boolean {
+                inner.save("new")
+                return inner.clearIf(expected)
+            }
+        }
+        val api = LiveApi(server.url("/").toString(), race, client, decodeDispatcher = Dispatchers.Unconfined)
+        server.enqueue(error(401, "UNAUTHORIZED"))
+        api.events.test {
+            expectApiError(401) { api.notifications() }
+            expectNoEvents()
+        }
+        assertEquals("new", race.load())
+    }
+
+    @Test
+    fun anUnreadableLoginLeavesNoHalfSession() = runBlocking {
+        server.enqueue(json("""{"id":"u1"}""").addHeader("Set-Cookie", "sid=tok; Path=/"))
+        assertEquals(ApiError.Code.DECODING, expectApiError(null) { api.login("a", "b") }.code)
+        assertNull("the token is saved only after the response decodes", tokens.load())
+    }
+
+    @Test
+    fun patchBodiesOnTheWire() = runBlocking {
+        server.enqueue(json(task))
+        api.updateTask(
+            "50000000-0000-4000-8000-000000000001",
+            TaskChanges(
+                assigneeId = Patch.Clear,
+                dueDate = Patch.Set(java.time.LocalDate.of(2026, 10, 19)),
+                completed = true
+            )
+        )
+        val request = server.takeRequest()
+        assertEquals("PATCH", request.method)
+        assertEquals("/api/v1/tasks/50000000-0000-4000-8000-000000000001", request.path)
+        assertEquals("application/json; charset=utf-8", request.getHeader("Content-Type"))
+        assertEquals("""{"assigneeId":null,"dueDate":"2026-10-19","completed":true}""", request.body.readUtf8())
     }
 
     @Test
@@ -184,7 +241,8 @@ class LiveApiTest {
             assertEquals(ApiEvent.WorkspaceLost("w1"), awaitItem())
             expectApiError(404) { api.createTask(NewTask(title = "x")) }
             assertEquals(ApiEvent.WorkspaceLost("w1"), awaitItem())
-            expectApiError(404) { api.task("t1") } // an id-addressed 404 is about the task
+            // An id-addressed 404 is about the task.
+            expectApiError(404) { api.task("50000000-0000-4000-8000-000000000001") }
             expectApiError(404) { api.me() } // no header on /auth
             expectNoEvents()
         }
@@ -231,7 +289,7 @@ class LiveApiTest {
 
     @Test
     fun unsafeIdsNeverReachAPath() = runBlocking {
-        for (id in listOf("..", "a/b", "x y", "")) {
+        for (id in listOf("..", "a/b", "x y", "", "t1", "50000000-0000-4000-8000-000000000001/..")) {
             assertEquals(ApiError.Code.NOT_FOUND, expectApiError(null) { api.task(id) }.code)
         }
         assertEquals(0, server.requestCount)

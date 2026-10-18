@@ -27,8 +27,9 @@ class HelpersTest {
         assertEquals("tok", SessionCookie.token("theme=dark; $expires, sid=tok; Path=/"))
         // Attributes first is not a cookie name.
         assertNull(SessionCookie.token("Path=/; sid2=x"))
-        // A clearing cookie is not a session.
+        // A clearing cookie is not a session, but a later sid in the same header is.
         assertNull(SessionCookie.token("sid=; Max-Age=0"))
+        assertEquals("fresh", SessionCookie.token("sid=; Max-Age=0, sid=fresh; Path=/"))
         assertNull(SessionCookie.token(headersOf()))
     }
 
