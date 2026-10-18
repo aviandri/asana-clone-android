@@ -624,6 +624,11 @@ class CompletionFeedback {
 1. **One current workspace per app**, shared by every screen and the background worker (SPEC-ANDROID §3).
 2. **Open enums are value classes over the raw string**, not Kotlin `enum`s. Unknown values round-trip, and `when` needs an `else`.
 3. **State holders are main-confined plain classes, not ViewModels.** `:app` wraps them in ViewModels. They expose one state data class each, so Compose recomposes on one flow, and they never touch Android.
+   *(As built in :app, PR 4.)* The session and its holders live in the Application-scoped `AppContainer`,
+   not in ViewModels, so they survive rotation and process-wide state (one workspace) stays single.
+   Holder actions run in `AppContainer.appScope` (Main.immediate + SupervisorJob), never a composable
+   scope, so a screen going away can't abandon a write. Compose reads `state` with
+   `collectAsStateWithLifecycle`.
 4. **Text the user types lives in the UI**, never in store state (the Mac crash lesson: never push text into a
    focused field; on Android a TextField bound to a StateFlow drops characters). That covers add fields,
    quick add, the comment composer, and the search and user-search queries, which the UI only *sends*

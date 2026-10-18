@@ -47,6 +47,8 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig.DEBUG gates the test launch flags (LaunchFlags.read).
+        buildConfig = true
     }
 
     testOptions {
@@ -66,6 +68,20 @@ kotlin {
     jvmToolchain(17)
 }
 
+androidComponents {
+    // Robolectric Compose tests launch ComponentActivity from ui-test-manifest, which is debug-only (it
+    // must never ship in the release app). Release unit tests would only duplicate the debug ones.
+    beforeVariants(selector().withBuildType("release")) { variant ->
+        variant.enableUnitTest = false
+    }
+}
+
+composeCompiler {
+    // :core models are immutable but can't carry @Immutable (no Compose in :core): rows of them skip
+    // recomposition when unchanged (ARCHITECTURE.md, TaskCache).
+    stabilityConfigurationFiles.add(rootProject.layout.projectDirectory.file("app/compose-stability.conf"))
+}
+
 dependencies {
     implementation(project(":feature"))
     implementation(libs.kotlinx.coroutines.android)
@@ -78,6 +94,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime)

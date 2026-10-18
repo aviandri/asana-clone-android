@@ -3,4 +3,49 @@ package com.mekari.project
 /** Compose test tags used by UI tests (SPEC-ANDROID §5); exposed as resource ids too. */
 object TestTags {
     const val PLACEHOLDER = "app.placeholder"
+
+    // Frame
+    const val NAV_MY_TASKS = "nav.myTasks"
+    const val NAV_PROJECTS = "nav.projects"
+    const val NAV_INBOX = "nav.inbox"
+    const val NAV_SEARCH = "nav.search"
+    const val NAV_RAIL = "nav.rail"
+    const val INBOX_BADGE = "nav.inbox.badge"
+    const val WORKSPACE_SWITCHER = "topbar.workspaceSwitcher"
+    const val SETTINGS_BUTTON = "topbar.settings"
+
+    // Screens
+    const val SPLASH = "screen.splash"
+    const val NO_WORKSPACE = "screen.noWorkspace"
+    const val SIGN_IN = "screen.signIn"
+    const val SIGN_IN_SERVER = "signIn.server"
+    const val SIGN_IN_EMAIL = "signIn.email"
+    const val SIGN_IN_PASSWORD = "signIn.password"
+    const val SIGN_IN_BUTTON = "signIn.submit"
+    const val SIGN_IN_ERROR = "signIn.error"
+    const val MY_TASKS = "screen.myTasks"
+    const val MY_TASKS_LIST = "myTasks.list"
+    const val MY_TASKS_SHOW_COMPLETED = "myTasks.showCompleted"
+    const val TASK_DETAIL = "screen.taskDetail"
+    const val TASK_TITLE = "taskDetail.title"
+    const val TASK_COMPLETE = "taskDetail.complete"
+    const val TASK_DESCRIPTION = "taskDetail.description"
+    const val TASK_ASSIGNEE = "taskDetail.assignee"
+    const val TASK_DUE = "taskDetail.due"
+    const val TASK_PRIORITY = "taskDetail.priority"
+    const val TASK_LOADING_DETAILS = "taskDetail.loadingDetails"
+    const val SUBTASK_ADD_FIELD = "subtask.addField"
+    const val COMMENT_FIELD = "comment.field"
+    const val COMMENT_SEND = "comment.send"
+    const val SETTINGS = "screen.settings"
+    const val SIGN_OUT = "settings.signOut"
+    const val WORKSPACE_SHEET = "sheet.workspaces"
+    fun workspaceOption(id: String) = "workspace.option.$id"
+    fun subtaskRow(id: String) = "subtask.row.$id"
+    fun mentionOption(id: String) = "mention.option.$id"
+
+    // Shared rows and fields
+    const val ADD_TASK_FIELD = "addTask.field"
+    fun taskRow(id: String) = "task.row.$id"
+    fun taskCheckbox(id: String) = "task.checkbox.$id"
 }
