@@ -1,9 +1,9 @@
 package com.mekari.project.core
 
-import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.net.URI
 import java.net.URISyntaxException
+import okhttp3.HttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrl
 
 /** Web app URLs for "Open in browser" (Custom Tabs). Every link carries `?workspace=<id>`. */
 object WebLinks {
@@ -23,8 +23,15 @@ object WebLinks {
     /** `server` + `path` (which may carry its own query) + `?workspace=` when given. */
     fun url(server: String, path: String, workspace: String?): String {
         val parsed = "http://x/${path.trimStart('/')}".toHttpUrl()
-        val query = (0 until parsed.querySize).map { parsed.queryParameterName(it) to (parsed.queryParameterValue(it) ?: "") }
-        return url(server, parsed.pathSegments.filter { it.isNotEmpty() }, query + listOfNotNull(workspace?.let { "workspace" to it }))
+        val query = (0 until parsed.querySize).map {
+            parsed.queryParameterName(it) to
+                (parsed.queryParameterValue(it) ?: "")
+        }
+        return url(
+            server,
+            parsed.pathSegments.filter { it.isNotEmpty() },
+            query + listOfNotNull(workspace?.let { "workspace" to it })
+        )
     }
 
     private fun url(server: String, segments: List<String>, query: List<Pair<String, String>>): String {
@@ -59,7 +66,12 @@ sealed interface DeepLink {
             } catch (_: URISyntaxException) {
                 return null
             }
-            if (parsed.scheme?.lowercase() != SCHEME || parsed.rawQuery != null || parsed.rawFragment != null) return null
+            if (parsed.scheme?.lowercase() != SCHEME ||
+                parsed.rawQuery != null ||
+                parsed.rawFragment != null
+            ) {
+                return null
+            }
             val segments = (parsed.rawPath ?: "").split('/').filter { it.isNotEmpty() }
             val id = segments.singleOrNull()?.takeIf { uuid.matches(it) }?.lowercase() ?: return null
             return when (parsed.host?.lowercase()) {

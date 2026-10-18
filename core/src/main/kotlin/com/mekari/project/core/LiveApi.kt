@@ -1,5 +1,9 @@
 package com.mekari.project.core
 
+import java.io.IOException
+import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.channels.Channel
@@ -27,10 +31,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import java.io.IOException
-import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * [MekariApi] over HTTP (SPEC-ANDROID §3). One `send()` applies every per-request rule:
@@ -47,7 +47,7 @@ class LiveApi(
     private val client: OkHttpClient = defaultClient(),
     private val json: Json = MekariJson,
     /** Where response bodies are decoded (off the main thread). */
-    private val decodeDispatcher: CoroutineDispatcher = Dispatchers.Default,
+    private val decodeDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : MekariApi {
     private val server: HttpUrl = serverUrl.toHttpUrl()
 
@@ -79,9 +79,10 @@ class LiveApi(
             body = buildJsonObject {
                 put("email", email)
                 put("password", password)
-            },
+            }
         )
-        val token = SessionCookie.token(raw.headers) ?: throw ApiError.decoding("no session cookie in the login response")
+        val token =
+            SessionCookie.token(raw.headers) ?: throw ApiError.decoding("no session cookie in the login response")
         tokens.save(token)
         return decode(Me.serializer(), raw, "Me")
     }
@@ -123,7 +124,7 @@ class LiveApi(
         buildJsonObject {
             put("name", name)
             position?.let { put("position", it) }
-        },
+        }
     )
 
     override suspend fun updateSection(id: String, changes: SectionChanges): Section =
@@ -154,7 +155,7 @@ class LiveApi(
         Method.POST,
         "/tasks/${id(taskId)}/followers",
         TaskDetail.serializer(),
-        buildJsonObject { put("userId", userId) },
+        buildJsonObject { put("userId", userId) }
     )
 
     override suspend fun removeFollower(taskId: String, userId: String): TaskDetail =
@@ -171,7 +172,7 @@ class LiveApi(
         Method.POST,
         "/tasks/${id(taskId)}/comments",
         CommentSerializer,
-        buildJsonObject { put("body", body) },
+        buildJsonObject { put("body", body) }
     )
 
     override suspend fun editComment(id: String, body: String): Comment =
@@ -186,7 +187,7 @@ class LiveApi(
     override suspend fun notifications(unreadOnly: Boolean, limit: Int): InboxPage = get(
         "/notifications",
         InboxPage.serializer(),
-        mapOf("unread" to if (unreadOnly) "true" else null, "limit" to limit.toString()),
+        mapOf("unread" to if (unreadOnly) "true" else null, "limit" to limit.toString())
     )
 
     override suspend fun markRead(notificationId: String) {
@@ -206,16 +207,40 @@ class LiveApi(
 
     internal class Raw(val code: Int, val headers: Headers, val body: String)
 
-    private suspend fun <T> get(path: String, deserializer: DeserializationStrategy<T>, query: Map<String, String?> = emptyMap()): T =
+    private suspend fun <T> get(
+        path: String,
+        deserializer: DeserializationStrategy<T>,
+        query: Map<String, String?> = emptyMap()
+    ): T =
         decode(deserializer, send(Method.GET, path, query), deserializer.descriptor.serialName.substringAfterLast('.'))
 
-    private suspend fun <T> list(path: String, item: KSerializer<T>, query: Map<String, String?> = emptyMap()): List<T> =
-        decode(ListResponse.serializer(item), send(Method.GET, path, query), "list of ${item.descriptor.serialName.substringAfterLast('.')}").data
+    private suspend fun <T> list(
+        path: String,
+        item: KSerializer<T>,
+        query: Map<String, String?> = emptyMap()
+    ): List<T> = decode(
+        ListResponse.serializer(item),
+        send(Method.GET, path, query),
+        "list of ${item.descriptor.serialName.substringAfterLast('.')}"
+    ).data
 
-    private suspend fun <T> call(method: Method, path: String, deserializer: DeserializationStrategy<T>, body: JsonElement? = null): T =
-        decode(deserializer, send(method, path, body = body), deserializer.descriptor.serialName.substringAfterLast('.'))
+    private suspend fun <T> call(
+        method: Method,
+        path: String,
+        deserializer: DeserializationStrategy<T>,
+        body: JsonElement? = null
+    ): T = decode(
+        deserializer,
+        send(method, path, body = body),
+        deserializer.descriptor.serialName.substringAfterLast('.')
+    )
 
-    private suspend fun send(method: Method, path: String, query: Map<String, String?> = emptyMap(), body: JsonElement? = null): Raw {
+    private suspend fun send(
+        method: Method,
+        path: String,
+        query: Map<String, String?> = emptyMap(),
+        body: JsonElement? = null
+    ): Raw {
         val url = server.newBuilder().addPathSegments("api/v1").apply {
             path.split('/').filter { it.isNotEmpty() }.forEach { addPathSegment(it) }
             query.toSortedMap().forEach { (key, value) -> if (value != null) addQueryParameter(key, value) }
@@ -263,15 +288,16 @@ class LiveApi(
     private suspend fun <T> decode(deserializer: DeserializationStrategy<T>, raw: Raw, what: String): T =
         decodeWith(raw, what) { json.decodeFromString(deserializer, it) }
 
-    private suspend fun <T> decodeWith(raw: Raw, what: String, decode: (String) -> T): T = withContext(decodeDispatcher) {
-        try {
-            decode(raw.body)
-        } catch (e: SerializationException) {
-            throw ApiError.decoding("$what: ${e.message?.lineSequence()?.firstOrNull()}")
-        } catch (e: IllegalArgumentException) {
-            throw ApiError.decoding("$what: ${e.message?.lineSequence()?.firstOrNull()}")
+    private suspend fun <T> decodeWith(raw: Raw, what: String, decode: (String) -> T): T =
+        withContext(decodeDispatcher) {
+            try {
+                decode(raw.body)
+            } catch (e: SerializationException) {
+                throw ApiError.decoding("$what: ${e.message?.lineSequence()?.firstOrNull()}")
+            } catch (e: IllegalArgumentException) {
+                throw ApiError.decoding("$what: ${e.message?.lineSequence()?.firstOrNull()}")
+            }
         }
-    }
 
     companion object {
         const val WORKSPACE_HEADER = "X-Workspace-Id"
@@ -329,7 +355,7 @@ internal suspend fun Call.await(): LiveApi.Raw = suspendCancellableCoroutine { c
                 }
                 if (continuation.isActive) continuation.resume(raw)
             }
-        },
+        }
     )
 }
 

@@ -2,6 +2,7 @@
 
 package com.mekari.project.core
 
+import java.time.Instant
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.UseSerializers
 import kotlinx.serialization.json.Json
@@ -15,7 +16,6 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
-import java.time.Instant
 
 /** A task's comments and activity (`GET /tasks/:id/stories`), discriminated by `kind`. */
 @kotlinx.serialization.Serializable(with = StorySerializer::class)
@@ -34,7 +34,7 @@ data class Comment(
     /** Markdown; mentions in storage form `@[Name](userId)`. */
     val body: String,
     override val createdAt: Instant,
-    val editedAt: Instant? = null,
+    val editedAt: Instant? = null
 ) : Story {
     override val key: String get() = "comment-$id"
 
@@ -48,7 +48,7 @@ data class Activity(
     val actor: UserSummary,
     val type: ActivityType,
     val data: JsonElement = JsonNull,
-    override val createdAt: Instant,
+    override val createdAt: Instant
 ) : Story {
     override val key: String get() = "activity-$id"
 }
@@ -76,7 +76,9 @@ internal object CommentSerializer : FlatSerializer<Comment>("Comment") {
         author = json.decodeFromJsonElement(obj.require("author")),
         body = json.decodeFromJsonElement(obj.require("body")),
         createdAt = json.decodeFromJsonElement(InstantSerializer, obj.require("createdAt")),
-        editedAt = obj["editedAt"]?.takeIf { it != JsonNull }?.let { json.decodeFromJsonElement(InstantSerializer, it) },
+        editedAt = obj["editedAt"]?.takeIf {
+            it != JsonNull
+        }?.let { json.decodeFromJsonElement(InstantSerializer, it) }
     )
 
     override fun write(json: Json, value: Comment) = buildJsonObject {
@@ -95,7 +97,7 @@ internal object ActivitySerializer : FlatSerializer<Activity>("Activity") {
         actor = json.decodeFromJsonElement(obj.require("actor")),
         type = json.decodeFromJsonElement(obj.require("type")),
         data = obj["data"] ?: JsonNull,
-        createdAt = json.decodeFromJsonElement(InstantSerializer, obj.require("createdAt")),
+        createdAt = json.decodeFromJsonElement(InstantSerializer, obj.require("createdAt"))
     )
 
     override fun write(json: Json, value: Activity) = buildJsonObject {
@@ -108,7 +110,8 @@ internal object ActivitySerializer : FlatSerializer<Activity>("Activity") {
     }
 }
 
-private fun JsonObject.require(key: String): JsonElement = this[key] ?: throw SerializationException("missing key \"$key\"")
+private fun JsonObject.require(key: String): JsonElement =
+    this[key] ?: throw SerializationException("missing key \"$key\"")
 
 /**
  * `{ "data": [Story] }`, skipping stories of an unknown `kind` instead of failing the whole feed.

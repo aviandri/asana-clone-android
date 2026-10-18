@@ -16,7 +16,7 @@ class ApiError(
     val status: Int? = null,
     override val message: String,
     /** `error.details` on VALIDATION (and NO_WORKSPACE on 403). */
-    val issues: List<FieldIssue> = emptyList(),
+    val issues: List<FieldIssue> = emptyList()
 ) : Exception(message) {
     /** Open: BE codes plus the client-side TRANSPORT / DECODING. */
     @JvmInline
@@ -47,8 +47,11 @@ class ApiError(
     val isNoWorkspace: Boolean
         get() = code == Code.FORBIDDEN && issues.any { it.path == listOf("workspace") && it.message == "NO_WORKSPACE" }
 
-    override fun equals(other: Any?) = other is ApiError && code == other.code && status == other.status &&
-        message == other.message && issues == other.issues
+    override fun equals(other: Any?) = other is ApiError &&
+        code == other.code &&
+        status == other.status &&
+        message == other.message &&
+        issues == other.issues
 
     override fun hashCode() = listOf(code, status, message, issues).hashCode()
 

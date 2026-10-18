@@ -2,6 +2,8 @@
 
 package com.mekari.project.core
 
+import java.time.Instant
+import java.time.LocalDate
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.UseSerializers
 import kotlinx.serialization.json.Json
@@ -10,8 +12,6 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
-import java.time.Instant
-import java.time.LocalDate
 
 // IDs are Strings (BE UUIDs, not parsed). JSON is camelCase, as the properties are named.
 
@@ -30,7 +30,7 @@ data class PickableUser(val user: UserSummary, val role: WorkspaceRole) {
             PickableUser(json.decodeFromJsonElement(obj), json.decodeFromJsonElement(obj["role"] ?: missing("role")))
         override fun write(json: Json, value: PickableUser) = merge(
             json.encodeToJsonElement(value.user).jsonObject,
-            buildJsonObject { put("role", json.encodeToJsonElement(value.role)) },
+            buildJsonObject { put("role", json.encodeToJsonElement(value.role)) }
         )
     }
 }
@@ -43,7 +43,7 @@ data class User(
     val avatarColor: String,
     val role: WorkspaceRole,
     val isActive: Boolean,
-    val createdAt: Instant,
+    val createdAt: Instant
 ) {
     val summary: UserSummary get() = UserSummary(id, name, email, avatarColor)
 }
@@ -57,7 +57,7 @@ data class Workspace(
     val color: String,
     val myRole: WorkspaceRole,
     val memberCount: Int,
-    val createdAt: Instant,
+    val createdAt: Instant
 ) {
     val isGuest: Boolean get() = myRole == WorkspaceRole.GUEST
     val isAdmin: Boolean get() = myRole == WorkspaceRole.ADMIN
@@ -72,14 +72,14 @@ data class Me(val user: User, val currentWorkspace: Workspace?, val workspaces: 
         override fun read(json: Json, obj: JsonObject) = Me(
             json.decodeFromJsonElement(obj),
             obj["currentWorkspace"]?.let { json.decodeFromJsonElement<Workspace?>(it) },
-            json.decodeFromJsonElement(obj["workspaces"] ?: missing("workspaces")),
+            json.decodeFromJsonElement(obj["workspaces"] ?: missing("workspaces"))
         )
         override fun write(json: Json, value: Me) = merge(
             json.encodeToJsonElement(value.user).jsonObject,
             buildJsonObject {
                 put("currentWorkspace", json.encodeToJsonElement(value.currentWorkspace))
                 put("workspaces", json.encodeToJsonElement(value.workspaces))
-            },
+            }
         )
     }
 }
@@ -112,7 +112,7 @@ data class Project(
     /** My role; null when I'm not a member (e.g. a workspace admin browsing). */
     val myRole: ProjectRole? = null,
     val createdAt: Instant,
-    val updatedAt: Instant,
+    val updatedAt: Instant
 ) {
     val ref: ProjectRef get() = ProjectRef(id, name, color)
 }
@@ -124,7 +124,7 @@ data class ProjectDetail(
     /** Ordered by position. */
     val sections: List<Section>,
     val members: List<ProjectMember>,
-    val team: TeamRef,
+    val team: TeamRef
 ) {
     val id: String get() = project.id
 
@@ -133,7 +133,7 @@ data class ProjectDetail(
             json.decodeFromJsonElement(obj),
             json.decodeFromJsonElement<List<Section>>(obj["sections"] ?: missing("sections")).sortedBy { it.position },
             json.decodeFromJsonElement(obj["members"] ?: missing("members")),
-            json.decodeFromJsonElement(obj["team"] ?: missing("team")),
+            json.decodeFromJsonElement(obj["team"] ?: missing("team"))
         )
         override fun write(json: Json, value: ProjectDetail) = merge(
             json.encodeToJsonElement(value.project).jsonObject,
@@ -141,7 +141,7 @@ data class ProjectDetail(
                 put("sections", json.encodeToJsonElement(value.sections))
                 put("members", json.encodeToJsonElement(value.members))
                 put("team", json.encodeToJsonElement(value.team))
-            },
+            }
         )
     }
 }
@@ -169,7 +169,7 @@ data class TaskItem(
     val commentCount: Int = 0,
     val project: ProjectRef? = null,
     val createdAt: Instant,
-    val updatedAt: Instant,
+    val updatedAt: Instant
 )
 
 @Serializable
@@ -181,7 +181,7 @@ data class TaskDetail(
     val task: TaskItem,
     val followers: List<UserSummary> = emptyList(),
     val subtasks: List<TaskItem> = emptyList(),
-    val parent: TaskParentRef? = null,
+    val parent: TaskParentRef? = null
 ) {
     val id: String get() = task.id
 
@@ -190,7 +190,7 @@ data class TaskDetail(
             json.decodeFromJsonElement(obj),
             obj["followers"]?.let { json.decodeFromJsonElement<List<UserSummary>>(it) } ?: emptyList(),
             obj["subtasks"]?.let { json.decodeFromJsonElement<List<TaskItem>>(it) } ?: emptyList(),
-            obj["parent"]?.let { json.decodeFromJsonElement<TaskParentRef?>(it) },
+            obj["parent"]?.let { json.decodeFromJsonElement<TaskParentRef?>(it) }
         )
         override fun write(json: Json, value: TaskDetail) = merge(
             json.encodeToJsonElement(value.task).jsonObject,
@@ -198,7 +198,7 @@ data class TaskDetail(
                 put("followers", json.encodeToJsonElement(value.followers))
                 put("subtasks", json.encodeToJsonElement(value.subtasks))
                 put("parent", json.encodeToJsonElement(value.parent))
-            },
+            }
         )
     }
 }
@@ -215,7 +215,7 @@ data class InboxNotification(
     val read: Boolean,
     val createdAt: Instant,
     val actor: UserSummary,
-    val task: NotificationTaskRef? = null,
+    val task: NotificationTaskRef? = null
 ) {
     /** "Alice Johnson commented on Fix login" (inbox rows and local notifications). */
     val summary: String
@@ -238,7 +238,7 @@ data class InboxPage(val data: List<InboxNotification>, val unreadCount: Int)
 data class SearchResults(
     val tasks: List<TaskItem> = emptyList(),
     val projects: List<Project> = emptyList(),
-    val users: List<UserSummary> = emptyList(),
+    val users: List<UserSummary> = emptyList()
 ) {
     val isEmpty: Boolean get() = tasks.isEmpty() && projects.isEmpty() && users.isEmpty()
 }

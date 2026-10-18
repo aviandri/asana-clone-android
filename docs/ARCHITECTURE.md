@@ -8,7 +8,7 @@ The signatures here are the agreement between the data and UI engineers. Change 
 tell the other side.
 
 ```
-:core     Kotlin/JVM + kotlinx.serialization + coroutines + OkHttp/Retrofit. No android.* imports.
+:core     Kotlin/JVM + kotlinx.serialization + coroutines + OkHttp. No android.* imports.
   models (com.mekari.project.core), ApiError, MekariApi, LiveApi, TokenStore, ServerSettings,
   FakeApi + DemoIds (…core.fake), WebLinks, DeepLink, Mentions, Reorder, ServerUrl
       ▲
@@ -156,7 +156,7 @@ A non-JSON error body becomes `Code("HTTP <status>")`. Equality is by code, stat
 
 ## 3. :core: the API
 
-One interface, two implementations: `LiveApi` (OkHttp + Retrofit) and `FakeApi` (in memory).
+One interface, two implementations: `LiveApi` (OkHttp) and `FakeApi` (in memory).
 `:feature` depends only on the interface.
 
 ```kotlin
@@ -227,7 +227,7 @@ class LiveApi(serverUrl: String, tokens: TokenStore, client: OkHttpClient = Live
 - **401 race:** each request remembers the token it was sent with. A 401 clears the token and emits `Unauthorized` **only if that token is still the stored one**. A late 401 for an older token (the poller, a request from before a re-login) is ignored. `login` and `logout` never emit it.
 - **Lost access:** a 404 on a *scoped collection* path while the header is set emits `WorkspaceLost(header)`, then throws as usual. The paths are the web FE's list: `/users`, `/projects`, `/me/tasks`, `POST /tasks`, `/notifications`, `/notifications/read-all` and `/search`.
 - **Errors:** the BE envelope decodes into `ApiError`. A decoding failure names the JSON path, e.g. `$.data[0].dueDate: …`.
-- **Cancellation:** cancelling the coroutine cancels the OkHttp call (Retrofit suspend) and throws `CancellationException`, never an `ApiError`.
+- **Cancellation:** cancelling the coroutine cancels the OkHttp call and throws `CancellationException`, never an `ApiError`.
 - No retries and no caching in v1.
 
 ### TokenStore & settings
@@ -418,7 +418,7 @@ class TaskCache {
   fun remove(id: String)                                 // tombstone: later copies never bring it back
   /** Shows `changes` at once, PATCHes, stores the server's TaskDetail. On failure only this edit drops out
    *  and the error is rethrown (ApiError, or CancellationException). */
-  suspend fun update(id: String, changes: TaskChanges, assignee: UserSummary? = null, setAssignee: Boolean = false)
+  suspend fun update(id: String, changes: TaskChanges, assignee: Patch<UserSummary>? = null)   // assignee: shown at once when assigneeId is set
 }
 ```
 

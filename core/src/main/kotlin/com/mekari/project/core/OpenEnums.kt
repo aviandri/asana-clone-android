@@ -136,7 +136,7 @@ value class ActivityType(override val raw: String) : OpenEnum {
         val DESCRIPTION_CHANGED = ActivityType("DESCRIPTION_CHANGED")
         val known = listOf(
             CREATED, COMPLETED, REOPENED, ASSIGNED, UNASSIGNED, DUE_DATE_CHANGED, MOVED_SECTION, RENAMED,
-            PRIORITY_CHANGED, DESCRIPTION_CHANGED,
+            PRIORITY_CHANGED, DESCRIPTION_CHANGED
         )
     }
 }

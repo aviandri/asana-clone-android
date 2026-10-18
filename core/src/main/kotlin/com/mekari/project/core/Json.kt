@@ -1,5 +1,9 @@
 package com.mekari.project.core
 
+import java.time.Instant
+import java.time.LocalDate
+import java.time.OffsetDateTime
+import java.time.format.DateTimeParseException
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.descriptors.PrimitiveKind
@@ -13,10 +17,6 @@ import kotlinx.serialization.json.JsonDecoder
 import kotlinx.serialization.json.JsonEncoder
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
-import java.time.Instant
-import java.time.LocalDate
-import java.time.OffsetDateTime
-import java.time.format.DateTimeParseException
 
 /** The BE's JSON: camelCase, unknown keys ignored, absent nullable fields are null and nulls are omitted. */
 val MekariJson: Json = Json {
@@ -79,5 +79,10 @@ internal abstract class FlatSerializer<T>(name: String) : KSerializer<T> {
         output.encodeJsonElement(write(output.json, value))
     }
 
-    protected fun merge(vararg parts: JsonObject): JsonObject = JsonObject(parts.fold(emptyMap()) { acc, part -> acc + part })
+    protected fun merge(vararg parts: JsonObject): JsonObject = JsonObject(
+        parts.fold(emptyMap()) { acc, part ->
+            acc +
+                part
+        }
+    )
 }
