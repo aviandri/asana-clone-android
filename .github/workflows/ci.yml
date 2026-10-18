@@ -207,3 +207,103 @@ jobs:
           name: MekariProject-android-debug-${{ github.sha }}
           path: dist/*.apk
           retention-days: 30
+
+  release:
+    # v* tags only (SPEC-ANDROID §6): a release APK signed with the user's keystore (GitHub secrets),
+    # versionName from the tag, versionCode = run number, published as a GitHub Release.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [unit, lint, contract, instrumented]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+    steps:
+      - name: Check signing secrets
+        # Names only; values are never printed (and GitHub masks them in logs anyway).
+        run: |
+          missing=()
+          for name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            [ -n "${!name}" ] || missing+=("$name")
+          done
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::ANDROID_KEYSTORE_* secrets missing: ${missing[*]}. Add them under Settings → Secrets and variables → Actions, then re-run this job."
+            exit 1
+          fi
+          echo "all 4 signing secrets are set"
+      - uses: actions/checkout@v4
+      - name: Version
+        id: version
+        # v1.2.3 / v1.2.3-rc1 → versionName 1.2.3 / 1.2.3-rc1; versionCode = run number.
+        run: |
+          [[ "$GITHUB_REF_NAME" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-[0-9A-Za-z.]+)?$ ]] \
+            || { echo "::error::tag $GITHUB_REF_NAME is not vMAJOR.MINOR.PATCH[-suffix]"; exit 1; }
+          echo "name=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "code=$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Decode the keystore
+        run: |
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks" \
+            || { echo "::error::ANDROID_KEYSTORE_BASE64 is not valid base64"; exit 1; }
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          # Fail early, without echoing anything secret, if the password or alias doesn't match.
+          keytool -list -keystore "$RUNNER_TEMP/release.jks" -storepass:env ANDROID_KEYSTORE_PASSWORD \
+            -alias "$ANDROID_KEY_ALIAS" > /dev/null 2>&1 \
+            || { echo "::error::the keystore can't be opened with ANDROID_KEYSTORE_PASSWORD, or has no key named ANDROID_KEY_ALIAS"; exit 1; }
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          # Release builds don't write the shared cache.
+          cache-read-only: true
+      - name: Build the signed release APK
+        run: |
+          ./gradlew :app:assembleRelease \
+            -PversionName="${{ steps.version.outputs.name }}" -PversionCode="${{ steps.version.outputs.code }}"
+      - name: Verify and name the APK
+        id: apk
+        run: |
+          BT="$ANDROID_HOME/build-tools/35.0.0"
+          SRC=app/build/outputs/apk/release/app-release.apk
+          [ -f "$SRC" ] || { echo "::error::no signed APK (app-release.apk) was produced"; ls app/build/outputs/apk/release; exit 1; }
+          mkdir -p dist
+          APK="dist/MekariProject-android-${{ steps.version.outputs.name }}.apk"
+          cp "$SRC" "$APK"
+          "$BT/apksigner" verify --print-certs "$APK" | tee dist/signing.txt
+          badging=$("$BT/aapt2" dump badging "$APK" | head -1)
+          echo "$badging"
+          grep -q "versionCode='${{ steps.version.outputs.code }}' versionName='${{ steps.version.outputs.name }}'" <<< "$badging" \
+            || { echo "::error::APK version doesn't match the tag"; exit 1; }
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(sha256sum "$APK" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          echo "cert=$(grep -m1 'certificate SHA-256 digest' dist/signing.txt | sed 's/.*digest: //')" >> "$GITHUB_OUTPUT"
+      - name: Remove the keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release.jks"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APK: ${{ steps.apk.outputs.path }}
+          APK_SHA256: ${{ steps.apk.outputs.sha256 }}
+          CERT_SHA256: ${{ steps.apk.outputs.cert }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: |
+          prerelease=()
+          [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=(--prerelease)
+          notes=$(cat <<'NOTES'
+          Android 8.0+ (API 26). Signed release APK. To install on a phone:
+
+          1. Download the `.apk` below on the phone (or `adb install -r <file>.apk` from a computer).
+          2. Open it; if asked, allow **Install unknown apps** for your browser or Files app, then **Install**.
+          3. Later releases install over this one (same signing key). A **debug** build from CI is signed with a different key: uninstall it first, or the install fails with "App not installed" / `INSTALL_FAILED_UPDATE_INCOMPATIBLE`.
+          NOTES
+          )
+          notes="$notes"$'\n\n'"versionCode \`$VERSION_CODE\` · APK SHA-256 \`$APK_SHA256\` · signing certificate SHA-256 \`$CERT_SHA256\`"
+          gh release create "$GITHUB_REF_NAME" "$APK" -R "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Mekari Project for Android ${GITHUB_REF_NAME#v}" "${prerelease[@]}" --generate-notes \
+            --notes "$notes"
