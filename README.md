@@ -50,5 +50,37 @@ Gradle at 2 GB. Robolectric covers UI tests locally; CI runs the emulator.
 | `unit` | `./gradlew test` (`:core`, `:feature`, Robolectric `:app` tests) |
 | `lint` | `./gradlew lint ktlintCheck`; reports uploaded |
 | `contract` | BE `main` (Postgres service, migrate, full seed) + the `*ContractTest` tests, failing if they were skipped |
-| `instrumented` | emulator (API 34 x86_64, google_apis, KVM): `connectedDebugAndroidTest` |
+| `instrumented` | emulator (API 34 x86_64, google_apis, KVM): `connectedDebugAndroidTest`, then a launch smoke (`.github/scripts/launch-smoke.sh`: install the debug APK, start it with the fake-API flag, fail if it isn't running and resumed after 5 s or logged a crash/ANR) |
 | `debug-apk` | `:app:assembleDebug`; on pushes to `main` uploads `MekariProject-android-debug-<sha>` |
+| `release` | `v*` tags only: signed release APK, published as a GitHub Release (see below) |
+
+## Releasing
+Push a tag `vMAJOR.MINOR.PATCH` (or `vMAJOR.MINOR.PATCH-rc1` for a pre-release) on `main`; only the
+orchestrator tags. After `unit`, `lint`, `contract` and `instrumented` pass, the `release` job:
+1. checks the four signing secrets and fails with *"ANDROID_KEYSTORE_\* secrets missing: …"* (names
+   only) if any are absent;
+2. builds `:app:assembleRelease` with `versionName` = the tag without `v` and `versionCode` = the run
+   number, signed with the keystore;
+3. verifies the signature (`apksigner`) and version (`aapt2`), then publishes
+   `MekariProject-android-<version>.apk` with install notes, the APK's SHA-256 and the signing
+   certificate's SHA-256.
+
+Without the keystore variables, `./gradlew :app:assembleRelease` still works locally and produces an
+unsigned `app-release-unsigned.apk`.
+
+### One-time setup: the release keystore
+The keystore never goes into the repo. Keep a backup somewhere safe: an update must be signed with the
+same key, and a lost key means users have to uninstall and reinstall.
+```sh
+keytool -genkeypair -v -keystore mekari-project-release.jks -alias mekari-project \
+  -keyalg RSA -keysize 4096 -validity 10000
+base64 -i mekari-project-release.jks | tr -d '\n' | pbcopy      # macOS; Linux: base64 -w0 <file>
+```
+Add these repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+|---|---|
+| `ANDROID_KEYSTORE_BASE64` | the base64 text from above |
+| `ANDROID_KEYSTORE_PASSWORD` | the keystore password |
+| `ANDROID_KEY_ALIAS` | `mekari-project` (the `-alias` above) |
+| `ANDROID_KEY_PASSWORD` | the key password; with keytool's default PKCS12 format this is the **same as the keystore password** |
