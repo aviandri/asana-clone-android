@@ -316,8 +316,8 @@ object Reorder {                                         // BE §2 float positio
 
 ## 4. :feature: state holders
 
-Every holder is a plain class built synchronously, with no network work in its constructor, so
-previews work. It exposes **one `state: StateFlow<XxxState>`** (an immutable data class) plus
+Every holder is a plain class built synchronously by `AppSession`/`WorkspaceScope` (internal
+constructors), with no network work in its constructor, so previews work. It exposes **one `state: StateFlow<XxxState>`** (an immutable data class) plus
 `suspend` actions. Collect it in Compose with `collectAsStateWithLifecycle()`.
 
 **Conventions (all holders)**
@@ -467,7 +467,7 @@ data class ProjectState(
   val viewMode: ViewMode, val showCompleted: Boolean, val canEdit: Boolean,
   val phase: LoadState, val lastError: ApiError?,
 ) { fun taskIds(sectionId: String?): List<String> }      // by position; null = "No section"; lingering tasks stay
-fun setViewMode(mode: ViewMode); fun setShowCompleted(show: Boolean)
+fun setViewMode(mode: ViewMode); fun setShowCompleted(show: Boolean)   // local: completed tasks are always loaded
 suspend fun load()
 suspend fun addTask(title: String, sectionId: String?): Boolean   // true once the created task is in the list (clear the field then)
 suspend fun addSection(name: String); suspend fun renameSection(id: String, name: String)
@@ -536,8 +536,8 @@ suspend fun load(); suspend fun markRead(id: String); suspend fun markAllRead()
 suspend fun open(id: String): NavigationTarget?          // marks read
 fun clearError()
 
+data class LocalNotice(val id: String, val title: String, val taskId: String?)     // "Alice commented on Fix login"
 class NotificationPoller {                               // drives InboxStore.load every 60 s while started (foreground)
-  data class LocalNotice(val id: String, val title: String, val taskId: String?)   // "Alice commented on Fix login"
   val newItems: SharedFlow<List<LocalNotice>>            // new unread since the last poll (never on the first poll)
   fun start(); fun stop()                                // idempotent; the scope starts it; :app stops it in the background
 }
