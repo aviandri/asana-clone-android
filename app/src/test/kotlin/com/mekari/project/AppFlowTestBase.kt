@@ -23,7 +23,7 @@ abstract class AppFlowTestBase {
     @get:Rule
     val compose = createEmptyComposeRule()
 
-    private var scenario: ActivityScenario<MainActivity>? = null
+    protected var scenario: ActivityScenario<MainActivity>? = null
 
     protected fun launch(fake: FakeApi = FakeApi(), signedIn: Boolean = true, intent: Intent? = null) {
         val app = ApplicationProvider.getApplicationContext<MekariApplication>()

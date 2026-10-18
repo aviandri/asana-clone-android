@@ -21,7 +21,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         val container = container
         // Only a fresh start's intent: a rotation must not open the same link again.
-        if (savedInstanceState == null) handle(intent)
+        if (savedInstanceState == null) handleIntent(intent)
         val flags = LaunchFlags.read(intent, allowed = BuildConfig.DEBUG)
         val session = container.session(fakeApi = flags.fakeApi, signedIn = !flags.signedOut)
         setContent {
@@ -37,16 +37,23 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        handle(intent)
+        handleIntent(intent)
     }
 
-    /** mekariproject:// links (deep links, notification taps) and the launcher's quick-add shortcut. */
-    private fun handle(intent: Intent?) {
+    /**
+     * Incoming intents are UNTRUSTED (the VIEW filter and the launcher are exported): only the action and the
+     * data URI are read, never extras (the test launch flags are read once, in onCreate, in debug builds).
+     * A link goes through :core's DeepLink.parse (exactly one UUID segment under task/ or project/), and it
+     * only ever navigates: AppSession.resolve opens it, switching only to a workspace the user is already
+     * in. Anything else is ignored.
+     */
+    internal fun handleIntent(intent: Intent?) {
         when (intent?.action) {
             ACTION_QUICK_ADD -> container.pendingQuickAdd.value = true
             Intent.ACTION_VIEW -> intent.data?.toString()?.let(DeepLink::parse)?.let {
                 container.pendingLink.value = it
             }
+            else -> Unit
         }
     }
 
