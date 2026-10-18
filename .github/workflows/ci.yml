@@ -1,0 +1,209 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # CI runners have the memory; the 2 GB cap in gradle.properties is for the shared dev box.
+  GRADLE_OPTS: -Dorg.gradle.daemon=false
+
+jobs:
+  unit:
+    # :core / :feature JVM tests and :app Compose UI tests under Robolectric (SPEC-ANDROID §6).
+    # Contract tests skip here (no MP_BASE_URL).
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew test
+      - name: Test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: '**/build/reports/tests/'
+          retention-days: 14
+
+  lint:
+    # Android lint (errors fail, warnings stay in the report) + ktlint.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew lint ktlintCheck
+      - name: Lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lint-reports
+          path: |
+            **/build/reports/lint-results*.html
+            **/build/reports/ktlint/
+          retention-days: 14
+
+  contract:
+    # Like the Mac repo's linux-contract: BE main, migrated + full seed, then the JVM contract tests
+    # through the real client.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: asana
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/asana
+      JWT_SECRET: ci-only-secret-at-least-16-chars
+      APP_URL: http://localhost:5173
+      APP_TIMEZONE: Asia/Jakarta
+      NODE_ENV: development
+      PORT: "3000"
+      HOST: 127.0.0.1
+      # The contract suite logs in many times from one IP; the BE default is 10/min.
+      AUTH_RATE_LIMIT_MAX: "1000"
+      MP_BASE_URL: http://127.0.0.1:3000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: aviandri/asana-clone-be
+          # github.token can only read this repo; if asana-clone-be is private, add a fine-grained
+          # read-only PAT (Contents: read on asana-clone-be) as the BE_REPO_TOKEN secret.
+          token: ${{ secrets.BE_REPO_TOKEN || github.token }}
+          ref: main
+          path: be
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: be/package-lock.json
+      - name: Backend (migrate, build, seed, start)
+        working-directory: be
+        run: |
+          npm ci
+          npx prisma migrate deploy
+          npm run build
+          npm run seed
+          nohup npm start > ../be.log 2>&1 &
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3000/health > /dev/null && exit 0
+            sleep 1
+          done
+          echo "backend did not become healthy"; cat ../be.log; exit 1
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Contract tests
+        # A skipped contract test (MP_BASE_URL missing) would pass silently, so check they ran.
+        run: |
+          ./gradlew :core:test --tests '*ContractTest' --rerun
+          python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          tests = skipped = 0
+          for f in glob.glob('core/build/test-results/test/*ContractTest.xml'):
+              r = ET.parse(f).getroot()
+              tests += int(r.get('tests')); skipped += int(r.get('skipped'))
+          print(f'contract tests: {tests} run, {skipped} skipped')
+          raise SystemExit(0 if tests and not skipped else 1)
+          EOF
+      - name: Backend log
+        if: always()
+        run: cat be.log || true
+      - name: Test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: contract-test-reports
+          path: core/build/reports/tests/
+          retention-days: 14
+
+  instrumented:
+    # Emulator tests (API 34 x86_64, KVM), launched with the fake-API flag.
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build the app and test APKs (before booting the emulator)
+        run: ./gradlew assembleDebug assembleDebugAndroidTest
+      - name: Emulator tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: ./gradlew connectedDebugAndroidTest
+      - name: Test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: instrumented-test-reports
+          path: app/build/reports/androidTests/
+          retention-days: 14
+
+  debug-apk:
+    # The debug APK, uploaded on pushes to main as MekariProject-android-debug-<sha> for device QA.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - run: ./gradlew :app:assembleDebug
+      - name: Name the APK
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/app-debug.apk "dist/MekariProject-android-debug-${GITHUB_SHA::7}.apk"
+          "$ANDROID_HOME"/build-tools/35.0.0/aapt2 dump badging dist/*.apk | head -3 || true
+      - name: Upload debug APK
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: MekariProject-android-debug-${{ github.sha }}
+          path: dist/*.apk
+          retention-days: 30
