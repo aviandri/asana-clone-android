@@ -35,8 +35,12 @@ Both libraries build and unit-test on the JVM (`./gradlew :core:test :feature:te
 - **Time:** debounce, polling, linger and cooldown use coroutine `delay`, so tests run on virtual
   time (`advanceTimeBy`). "Today" comes from an injected `java.time.Clock` (its zone included).
 - **Lifetime:** `AppSession` runs on an app-level `CoroutineScope` that the app hands in. Each
-  `WorkspaceScope` owns a child scope (poller, linger and cooldown timers, derived flows), which is
-  cancelled when the workspace changes or on sign-out. Nothing outlives its workspace.
+  `WorkspaceScope` owns a child scope (poller, linger timers, debouncers), which is
+  cancelled when the workspace changes or on sign-out; the celebration cooldown belongs to `AppSession`
+  (app-wide). Work launched elsewhere (a ViewModel action, a renumber loop) can't outlive it either:
+  the scope's API client refuses every request once the scope is closed (as a cancellation, before it
+  is sent), the old scope closes BEFORE the header changes, and a late `confirm()` from a closed scope
+  neither celebrates nor starts the cooldown.
 
 ## 1. :core: models
 
@@ -319,11 +323,13 @@ object Reorder {                                         // BE §2 float positio
 
 ## 4. :feature: state holders
 
-Every holder is a plain class built synchronously, with no network work in its constructor, so
-previews work. It exposes **one `state: StateFlow<XxxState>`** (an immutable data class) plus
+Every holder (state types are nested: `MyTasksStore.State`, `ProjectStore.State`, …) is a plain class built synchronously by `AppSession`/`WorkspaceScope` (internal
+constructors), with no network work in its constructor, so previews work. It exposes **one `state: StateFlow<XxxState>`** (an immutable data class) plus
 `suspend` actions. Collect it in Compose with `collectAsStateWithLifecycle()`.
 
 **Conventions (all holders)**
+- **Synchronous state:** holders recompute their state on every TaskCache change, synchronously (no flow
+  hop), so right after an optimistic edit every holder's `state.value` already shows it.
 - **Loading:** `phase: LoadState`. **Errors:** `lastError: ApiError?` is transient; the UI shows it, then calls `clearError()`.
 - **Optimistic edits** go through the shared `TaskCache`, once. On failure, only that edit reverts, and `lastError` is set on the calling holder.
 - **Loads** apply a response unless something newer has already been applied (a later load, or a local change). An older response never overwrites newer state, but a caller awaiting a load still gets its data.
@@ -438,7 +444,7 @@ its Compose stability config file.
 ### ProjectListStore
 
 ```kotlin
-data class ProjectListState(val projects: List<Project>, val phase: LoadState, val lastError: ApiError?)   // non-archived, by name
+data class ProjectListStore.State(val projects: List<Project>, val phase: LoadState, val lastError: ApiError?)   // non-archived, by name
 suspend fun load(); fun clearError()
 ```
 
@@ -447,7 +453,7 @@ suspend fun load(); fun clearError()
 ```kotlin
 enum class DueBucket(val title: String) { OVERDUE, TODAY, UPCOMING, LATER, NO_DATE, COMPLETED }   // upcoming = 1…7 days
 data class TaskGroup(val bucket: DueBucket, val taskIds: List<String>)
-data class MyTasksState(
+data class MyTasksStore.State(
   val groups: List<TaskGroup>,                           // non-empty buckets in order; by due date, then title
   val showCompleted: Boolean, val phase: LoadState, val lastError: ApiError?,
 )
@@ -465,12 +471,12 @@ fun clearError()
 
 ```kotlin
 enum class ViewMode { LIST, BOARD }                      // initial from defaultView; CALENDAR/unknown → LIST
-data class ProjectState(
+data class ProjectStore.State(
   val detail: ProjectDetail?, val sections: List<Section>,   // by position
   val viewMode: ViewMode, val showCompleted: Boolean, val canEdit: Boolean,
   val phase: LoadState, val lastError: ApiError?,
 ) { fun taskIds(sectionId: String?): List<String> }      // by position; null = "No section"; lingering tasks stay
-fun setViewMode(mode: ViewMode); fun setShowCompleted(show: Boolean)
+fun setViewMode(mode: ViewMode); fun setShowCompleted(show: Boolean)   // local: completed tasks are always loaded
 suspend fun load()
 suspend fun addTask(title: String, sectionId: String?): Boolean   // true once the created task is in the list (clear the field then)
 suspend fun addSection(name: String); suspend fun renameSection(id: String, name: String)
@@ -488,7 +494,7 @@ fun clearError()
 ### TaskDetailStore
 
 ```kotlin
-data class TaskDetailState(
+data class TaskDetailStore.State(
   val task: TaskItem?,                                   // the cached row: shown at once
   val detail: TaskDetail?,                               // followers/subtasks/parent: "Loading details…" until loaded
   val stories: List<Story>,                              // oldest first
@@ -534,13 +540,13 @@ class UserSearch {                                       // assignee, followers,
 ### InboxStore & NotificationPoller
 
 ```kotlin
-data class InboxState(val notifications: List<InboxNotification>, val unreadCount: Int, val phase: LoadState, val lastError: ApiError?)
+data class InboxStore.State(val notifications: List<InboxNotification>, val unreadCount: Int, val phase: LoadState, val lastError: ApiError?)
 suspend fun load(); suspend fun markRead(id: String); suspend fun markAllRead()
 suspend fun open(id: String): NavigationTarget?          // marks read
 fun clearError()
 
+data class LocalNotice(val id: String, val title: String, val taskId: String?)     // "Alice commented on Fix login"
 class NotificationPoller {                               // drives InboxStore.load every 60 s while started (foreground)
-  data class LocalNotice(val id: String, val title: String, val taskId: String?)   // "Alice commented on Fix login"
   val newItems: SharedFlow<List<LocalNotice>>            // new unread since the last poll (never on the first poll)
   fun start(); fun stop()                                // idempotent; the scope starts it; :app stops it in the background
 }
@@ -552,7 +558,7 @@ The background check is the app's WorkManager job (15 min). It uses `LiveApi` di
 ### SearchStore
 
 ```kotlin
-data class SearchState(val query: String, val results: SearchResults?, val isSearching: Boolean, val lastError: ApiError?) { val isEmpty: Boolean }
+data class SearchStore.State(val query: String, val results: SearchResults?, val isSearching: Boolean, val lastError: ApiError?) { val isEmpty: Boolean }
 fun setQuery(query: String)                              // min 2 chars, debounced 250 ms; stale responses dropped
 fun target(taskId: String): NavigationTarget             // people open mailto: in the app
 ```
@@ -560,7 +566,7 @@ fun target(taskId: String): NavigationTarget             // people open mailto: 
 ### QuickAddModel (FAB + launcher shortcut)
 
 ```kotlin
-data class QuickAddState(val isSubmitting: Boolean, val lastError: ApiError?)   // the UI owns title + date
+data class QuickAddModel.State(val isSubmitting: Boolean, val lastError: ApiError?)   // the UI owns title + date
 fun canSubmit(title: String): Boolean
 suspend fun submit(title: String, dueDate: LocalDate?): Boolean   // personal task assigned to me; true on success (the UI clears
                                                                   // its fields if unchanged); My Tasks updates
