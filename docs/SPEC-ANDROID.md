@@ -34,7 +34,7 @@ wins. Ask the orchestrator before diverging from either.
   Same split as the Mac Kit / Features / App.
 - Libraries:
   - OkHttp 4.12 (no Retrofit: `LiveApi` sends every request through one function, as the Mac client does) + kotlinx.serialization 1.7, with kotlinx-coroutines 1.9 for async;
-  - AndroidX Navigation Compose, Lifecycle (ViewModel, `collectAsStateWithLifecycle`, and `lifecycle-process` for `ProcessLifecycleOwner`: the inbox poller runs only in the foreground), DataStore (prefs), WorkManager 2.10, Core SplashScreen.
+  - AndroidX Navigation Compose, Lifecycle (ViewModel, `collectAsStateWithLifecycle`, and `lifecycle-process` for `ProcessLifecycleOwner`: the inbox poller runs only in the foreground), DataStore (prefs), WorkManager 2.10, Core SplashScreen, Browser 1.8 (Custom Tabs for "Open in browser", ACTION_VIEW fallback).
   - No DI framework: a manual `AppContainer`.
   - Test-only: JUnit 4, kotlinx-coroutines-test, Turbine, Robolectric, and OkHttp MockWebServer 4.12 (`:core` LiveApi tests).
   - Anything else needs orchestrator approval.

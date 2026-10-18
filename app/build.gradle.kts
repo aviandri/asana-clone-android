@@ -99,6 +99,7 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime)
     implementation(libs.androidx.core.splashscreen)
+    implementation(libs.androidx.browser)
     debugImplementation(libs.androidx.compose.ui.tooling)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
 

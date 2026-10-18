@@ -171,7 +171,9 @@ fun TaskRow(
     onToggle: () -> Unit,
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
-    selected: Boolean = false
+    selected: Boolean = false,
+    /** An overflow menu (project rows: Move to section, Open in browser). */
+    trailing: (@Composable () -> Unit)? = null
 ) {
     val background = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
     Row(
@@ -199,6 +201,7 @@ fun TaskRow(
             Spacer(Modifier.width(8.dp))
             Avatar(assignee.name, assignee.avatarColor, size = 24.dp)
         }
+        trailing?.invoke()
     }
 }
 

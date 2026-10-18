@@ -68,11 +68,13 @@ fun AppScaffold(
     onSwitchWorkspace: () -> Unit,
     onOpenSettings: () -> Unit,
     modifier: Modifier = Modifier,
+    floatingActionButton: @Composable () -> Unit = {},
     content: @Composable (Modifier) -> Unit
 ) {
     val expanded = isExpandedWidth()
     Scaffold(
         modifier = modifier.fillMaxSize(),
+        floatingActionButton = floatingActionButton,
         topBar = {
             TopAppBar(
                 title = { WorkspaceSwitcherButton(workspace, onSwitchWorkspace) },

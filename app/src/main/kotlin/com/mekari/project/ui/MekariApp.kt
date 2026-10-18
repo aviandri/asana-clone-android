@@ -11,8 +11,12 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -49,11 +53,17 @@ import com.mekari.project.TestTags
 import com.mekari.project.feature.AppSession
 import com.mekari.project.feature.Auth
 import com.mekari.project.feature.LoadState
+import com.mekari.project.feature.NavigationTarget
 import com.mekari.project.feature.WorkspaceScope
 import com.mekari.project.ui.components.CompletionEffects
 import com.mekari.project.ui.components.PetalBurst
+import com.mekari.project.ui.screens.InboxScreen
 import com.mekari.project.ui.screens.LocalSnackbarHost
 import com.mekari.project.ui.screens.MyTasksScreen
+import com.mekari.project.ui.screens.ProjectScreen
+import com.mekari.project.ui.screens.ProjectsScreen
+import com.mekari.project.ui.screens.QuickAddSheet
+import com.mekari.project.ui.screens.SearchScreen
 import com.mekari.project.ui.screens.SettingsScreen
 import com.mekari.project.ui.screens.SignInScreen
 import com.mekari.project.ui.screens.TaskDetailScreen
@@ -93,6 +103,13 @@ fun MekariApp(session: AppSession, container: AppContainer) {
         }
         scope?.let { key(it) { CompletionOverlays(it, snackbar) } }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 88.dp))
+    }
+
+    val linkNotice by container.linkNotice.collectAsStateWithLifecycle()
+    LaunchedEffect(linkNotice) {
+        val notice = linkNotice ?: return@LaunchedEffect
+        container.linkNotice.value = null
+        snackbar.showSnackbar(notice)
     }
 
     // "You no longer have access to X" and friends.
@@ -158,8 +175,10 @@ private fun NoWorkspace(session: AppSession) {
 private object Routes {
     const val HOME = "home"
     const val TASK = "task/{id}"
+    const val PROJECT = "project/{id}"
     const val SETTINGS = "settings"
     fun task(id: String) = "task/$id"
+    fun project(id: String) = "project/$id"
 }
 
 /** Tabs + task detail + settings for one workspace. Large screens show My Tasks with the detail in a pane. */
@@ -193,6 +212,40 @@ private fun MainShell(
         }
     }
 
+    val openTask: (String) -> Unit = { id ->
+        if (expanded &&
+            selected == TopDestination.MY_TASKS
+        ) {
+            paneTask = id
+        } else {
+            nav.navigate(Routes.task(id))
+        }
+    }
+    val open: (NavigationTarget) -> Unit = { target ->
+        when (target) {
+            is NavigationTarget.Task -> nav.navigate(Routes.task(target.id))
+            is NavigationTarget.Project -> nav.navigate(Routes.project(target.id))
+        }
+    }
+    var quickAdd by rememberSaveable { mutableStateOf(false) }
+
+    // A resolved deep link or notification tap (AppContainer resolves it, switching workspace if needed, so this
+    // is the NEW shell after a switch) and the launcher's quick-add shortcut: consumed once.
+    val pendingTarget by container.pendingTarget.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingTarget) {
+        val target = pendingTarget ?: return@LaunchedEffect
+        container.pendingTarget.value = null
+        open(target)
+    }
+    val pendingQuickAdd by container.pendingQuickAdd.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingQuickAdd) {
+        if (pendingQuickAdd) {
+            container.pendingQuickAdd.value = false
+            selected = TopDestination.MY_TASKS
+            quickAdd = true
+        }
+    }
+
     NavHost(navController = nav, startDestination = Routes.HOME) {
         composable(Routes.HOME) {
             AppScaffold(
@@ -201,11 +254,17 @@ private fun MainShell(
                 workspace = state.current?.let { WorkspaceBadge(it.name, it.color, it.isGuest) },
                 inboxUnread = inbox.unreadCount,
                 onSwitchWorkspace = { showWorkspaces = true },
-                onOpenSettings = { nav.navigate(Routes.SETTINGS) }
-            ) { modifier ->
-                val openTask: (String) -> Unit = { id ->
-                    if (expanded) paneTask = id else nav.navigate(Routes.task(id))
+                onOpenSettings = { nav.navigate(Routes.SETTINGS) },
+                floatingActionButton = {
+                    if (selected == TopDestination.MY_TASKS) {
+                        FloatingActionButton(onClick = {
+                            quickAdd = true
+                        }, modifier = Modifier.testTag(TestTags.QUICK_ADD_FAB)) {
+                            Icon(Icons.Filled.Add, contentDescription = "Quick add")
+                        }
+                    }
                 }
+            ) { modifier ->
                 when (selected) {
                     TopDestination.MY_TASKS ->
                         if (expanded) {
@@ -230,13 +289,23 @@ private fun MainShell(
                         } else {
                             MyTasksScreen(scope, onOpenTask = openTask, selectedTaskId = null, modifier = modifier)
                         }
-                    else -> ComingSoon(selected, modifier)
+                    TopDestination.PROJECTS -> ProjectsScreen(scope, onOpenProject = {
+                        nav.navigate(Routes.project(it))
+                    }, modifier = modifier)
+                    TopDestination.INBOX -> InboxScreen(scope, onOpen = open, modifier = modifier)
+                    TopDestination.SEARCH -> SearchScreen(scope, onOpen = open, modifier = modifier)
                 }
             }
         }
         composable(Routes.TASK) { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
             TaskDetailScreen(scope, id, onBack = { nav.popBackStack() }, onOpenTask = { nav.navigate(Routes.task(it)) })
+        }
+        composable(Routes.PROJECT) { entry ->
+            val id = entry.arguments?.getString("id") ?: return@composable
+            ProjectScreen(session, scope, id, onBack = {
+                nav.popBackStack()
+            }, onOpenTask = { nav.navigate(Routes.task(it)) })
         }
         composable(Routes.SETTINGS) {
             SettingsScreen(session, container, onBack = { nav.popBackStack() })
@@ -246,19 +315,15 @@ private fun MainShell(
     if (showWorkspaces) {
         WorkspaceSheet(session, onDismiss = { showWorkspaces = false })
     }
+    if (quickAdd) {
+        QuickAddSheet(scope, onDismiss = { quickAdd = false })
+    }
+    AskNotificationPermissionOnce(container)
 }
 
 @Composable
 private fun NothingSelected() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Text("Select a task to see its details", color = MaterialTheme.colorScheme.onSurfaceVariant)
-    }
-}
-
-/** Projects, Inbox and Search arrive with PR 5 (SPEC-ANDROID §7). */
-@Composable
-private fun ComingSoon(destination: TopDestination, modifier: Modifier) {
-    Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text(destination.label, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

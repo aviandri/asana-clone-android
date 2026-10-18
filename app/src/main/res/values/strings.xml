@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
   <string name="app_name">Mekari Project</string>
+  <string name="shortcut_quick_add_short">New task</string>
+  <string name="shortcut_quick_add_long">Add a task to My Tasks</string>
 </resources>
