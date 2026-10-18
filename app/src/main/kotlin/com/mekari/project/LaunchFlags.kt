@@ -10,7 +10,16 @@ object LaunchFlags {
     /** Boolean extra (with [FAKE_API]): start signed out, at the sign-in screen. */
     const val SIGNED_OUT = "com.mekari.project.UI_TEST_SIGNED_OUT"
 
-    fun usesFakeApi(intent: Intent?): Boolean = intent?.getBooleanExtra(FAKE_API, false) ?: false
+    data class Parsed(val fakeApi: Boolean, val signedOut: Boolean)
 
-    fun startsSignedOut(intent: Intent?): Boolean = intent?.getBooleanExtra(SIGNED_OUT, false) ?: false
+    /**
+     * The test flags, honoured only when [allowed] (debug builds: `BuildConfig.DEBUG`). MainActivity is the
+     * exported launcher, so in a release build any app could otherwise start us on demo data, where edits
+     * vanish and a "sign-in" would go nowhere.
+     */
+    fun read(intent: Intent?, allowed: Boolean): Parsed {
+        if (!allowed || intent == null) return Parsed(fakeApi = false, signedOut = false)
+        val fake = intent.getBooleanExtra(FAKE_API, false)
+        return Parsed(fakeApi = fake, signedOut = fake && intent.getBooleanExtra(SIGNED_OUT, false))
+    }
 }

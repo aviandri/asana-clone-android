@@ -31,10 +31,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -45,6 +48,7 @@ import com.mekari.project.AppContainer
 import com.mekari.project.TestTags
 import com.mekari.project.feature.AppSession
 import com.mekari.project.feature.Auth
+import com.mekari.project.feature.LoadState
 import com.mekari.project.feature.WorkspaceScope
 import com.mekari.project.ui.components.CompletionEffects
 import com.mekari.project.ui.components.PetalBurst
@@ -61,13 +65,15 @@ import kotlinx.coroutines.MainScope
 val LocalAppScope = staticCompositionLocalOf<CoroutineScope> { MainScope() }
 
 /** Sign-in, the main shell, or "no workspace", depending on the session (SPEC-ANDROID §5). */
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 fun MekariApp(session: AppSession, container: AppContainer) {
     val state by session.state.collectAsStateWithLifecycle()
     val scope by session.scope.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
 
-    Box(Modifier.fillMaxSize()) {
+    // Test tags double as resource ids on every screen, so UiAutomator and device QA can find them (§5).
+    Box(Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }) {
         CompositionLocalProvider(LocalSnackbarHost provides snackbar) {
             Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                 when (state.auth) {
@@ -172,9 +178,19 @@ private fun MainShell(
     var showWorkspaces by remember { mutableStateOf(false) }
     val expanded = isExpandedWidth()
 
+    // First load for this workspace, once (not on rotation: the phase is no longer Idle then). Coming back to
+    // the foreground refreshes via the process lifecycle (AppContainer).
     LaunchedEffect(scope) {
-        scope.poller.start()
-        scope.refresh()
+        if (scope.myTasks.state.value.phase == LoadState.Idle) scope.refresh()
+    }
+
+    // Wide → compact (unfolding back, rotating a tablet): keep the task that was open in the pane.
+    LaunchedEffect(expanded) {
+        val open = paneTask
+        if (!expanded && open != null) {
+            paneTask = null
+            nav.navigate(Routes.task(open))
+        }
     }
 
     NavHost(navController = nav, startDestination = Routes.HOME) {

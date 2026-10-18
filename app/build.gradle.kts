@@ -30,6 +30,8 @@ android {
 
     buildFeatures {
         compose = true
+        // BuildConfig.DEBUG gates the test launch flags (LaunchFlags.read).
+        buildConfig = true
     }
 
     testOptions {
@@ -75,6 +77,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.runtime.compose)
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.navigation.compose)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime)

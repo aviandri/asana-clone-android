@@ -5,12 +5,16 @@ import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.util.Log
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.mekari.project.core.LiveApi
 import com.mekari.project.core.ServerSettings
 import com.mekari.project.core.TokenStore
@@ -53,6 +57,11 @@ class AppContainer(private val context: Context) {
      *  screen going away, so a PATCH is never abandoned halfway. */
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /**
+     * One blocking read at cold start, on purpose: :core's TokenStore and ServerSettings are synchronous
+     * (OkHttp interceptors can't suspend), and AppSession.start() needs both before the first frame can
+     * decide between sign-in and My Tasks. It's one small preferences file plus one Keystore unwrap.
+     */
     private val stored: Preferences by lazy { runBlocking { context.dataStore.data.first() } }
 
     private val _prefs by lazy {
@@ -98,7 +107,36 @@ class AppContainer(private val context: Context) {
         }
         currentSession = session
         appScope.launch { session.start() }
+        followForeground(session)
         return session
+    }
+
+    /**
+     * The inbox poller runs only while the app is in the foreground (ProcessLifecycleOwner: rotation isn't a
+     * stop), and coming back refreshes My Tasks, projects and the inbox. A new workspace scope starts its
+     * own poller if we're in the foreground; its first load is the UI's.
+     */
+    private fun followForeground(session: AppSession) {
+        val lifecycle = ProcessLifecycleOwner.get().lifecycle
+        lifecycle.addObserver(
+            LifecycleEventObserver { _, event ->
+                val scope = session.scope.value ?: return@LifecycleEventObserver
+                when (event) {
+                    Lifecycle.Event.ON_START -> {
+                        scope.poller.start()
+                        appScope.launch { scope.refresh() }
+                    }
+                    Lifecycle.Event.ON_STOP -> scope.poller.stop()
+                    else -> Unit
+                }
+            }
+        )
+        appScope.launch {
+            session.scope.collect { scope ->
+                // The first load is the UI's (MainShell); here only the foreground poller.
+                if (scope != null && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) scope.poller.start()
+            }
+        }
     }
 
     private val serverSettings: ServerSettings by lazy {
@@ -113,14 +151,22 @@ class AppContainer(private val context: Context) {
 
     private val tokenStore: TokenStore by lazy {
         object : TokenStore {
-            private var token: String? = stored[Keys.TOKEN]?.let { SessionCipher.decrypt(it) }
+            private var token: String? = stored[Keys.TOKEN]?.let { sealed ->
+                SessionCipher.decrypt(sealed) ?: run {
+                    // Unreadable (key lost after a restore, or corrupt): start signed out, and drop both.
+                    SessionCipher.deleteKey()
+                    write { it.remove(Keys.TOKEN) }
+                    null
+                }
+            }
 
             override fun load(): String? = token
 
             override fun save(token: String) {
                 this.token = token
                 val sealed = SessionCipher.encrypt(token)
-                write { it[Keys.TOKEN] = sealed }
+                // A Keystore failure keeps the token for this run only, rather than failing sign-in.
+                write { if (sealed != null) it[Keys.TOKEN] = sealed else it.remove(Keys.TOKEN) }
             }
 
             override fun clear() {
@@ -130,8 +176,13 @@ class AppContainer(private val context: Context) {
         }
     }
 
+    /**
+     * Writes in the order they were asked for: each launch runs to `edit()` at once on Main.immediate, and
+     * DataStore applies edits in call order (so a sign-out can't land before the sign-in it follows).
+     * DataStore does its own I/O off the main thread.
+     */
     private fun write(change: (androidx.datastore.preferences.core.MutablePreferences) -> Unit) {
-        appScope.launch(Dispatchers.IO) { context.dataStore.edit { change(it) } }
+        appScope.launch { context.dataStore.edit { change(it) } }
     }
 
     private object Keys {
@@ -149,20 +200,38 @@ class AppContainer(private val context: Context) {
  */
 internal object SessionCipher {
     private const val ALIAS = "mekari.session"
+    private const val TAG = "SessionCipher"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
 
-    fun encrypt(plain: String): String {
+    /** Null if the Keystore fails (logged by type only; never the token). */
+    fun encrypt(plain: String): String? = try {
         val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key()) }
         val sealed = cipher.iv + cipher.doFinal(plain.toByteArray(Charsets.UTF_8))
-        return Base64.encodeToString(sealed, Base64.NO_WRAP)
+        Base64.encodeToString(sealed, Base64.NO_WRAP)
+    } catch (e: Exception) {
+        Log.w(TAG, "Couldn't seal the session token: ${e.javaClass.simpleName}")
+        null
     }
 
-    fun decrypt(stored: String): String? = runCatching {
+    /** Null if it can't be opened (wrong key, corrupt blob, Keystore failure). */
+    fun decrypt(stored: String): String? = try {
         val bytes = Base64.decode(stored, Base64.NO_WRAP)
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes, 0, 12))
         String(cipher.doFinal(bytes, 12, bytes.size - 12), Charsets.UTF_8)
-    }.getOrNull()
+    } catch (e: Exception) {
+        Log.w(TAG, "Couldn't open the session token: ${e.javaClass.simpleName}")
+        null
+    }
+
+    /** Drops the key (after an unreadable token), so the next sign-in starts with a fresh one. */
+    fun deleteKey() {
+        try {
+            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS)
+        } catch (e: Exception) {
+            Log.w(TAG, "Couldn't delete the session key: ${e.javaClass.simpleName}")
+        }
+    }
 
     private fun key(): SecretKey {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }

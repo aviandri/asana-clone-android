@@ -27,14 +27,12 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mekari.project.TestTags
@@ -60,7 +58,7 @@ data class WorkspaceBadge(val name: String, val color: String, val isGuest: Bool
  * The app frame: a top bar with the workspace switcher and Settings, plus a bottom NavigationBar (phones)
  * or a NavigationRail (≥ 840 dp). [content] draws the selected destination.
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalComposeUiApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AppScaffold(
     selected: TopDestination,
@@ -74,7 +72,7 @@ fun AppScaffold(
 ) {
     val expanded = isExpandedWidth()
     Scaffold(
-        modifier = modifier.fillMaxSize().semantics { testTagsAsResourceId = true },
+        modifier = modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
                 title = { WorkspaceSwitcherButton(workspace, onSwitchWorkspace) },

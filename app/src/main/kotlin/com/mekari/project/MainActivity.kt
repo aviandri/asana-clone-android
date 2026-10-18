@@ -18,10 +18,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         val container = container
-        val session = container.session(
-            fakeApi = LaunchFlags.usesFakeApi(intent),
-            signedIn = !LaunchFlags.startsSignedOut(intent)
-        )
+        val flags = LaunchFlags.read(intent, allowed = BuildConfig.DEBUG)
+        val session = container.session(fakeApi = flags.fakeApi, signedIn = !flags.signedOut)
         setContent {
             val prefs by container.prefs.collectAsStateWithLifecycle()
             CompositionLocalProvider(

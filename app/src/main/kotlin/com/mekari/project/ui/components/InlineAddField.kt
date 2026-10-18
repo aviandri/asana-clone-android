@@ -17,7 +17,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.SolidColor
@@ -48,6 +52,8 @@ fun InlineAddField(
     testTag: String = "addTask.field"
 ) {
     val scope = rememberCoroutineScope()
+    // One add at a time: a fast double Done must not create the task twice.
+    var submitting by remember { mutableStateOf(false) }
     val textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface)
     Row(
         modifier.fillMaxWidth().heightIn(min = 48.dp).padding(horizontal = 16.dp),
@@ -64,10 +70,15 @@ fun InlineAddField(
             onKeyboardAction = {
                 val submitted = state.text.toString()
                 val title = submitted.trim()
-                if (title.isNotEmpty()) {
+                if (title.isNotEmpty() && !submitting) {
+                    submitting = true
                     scope.launch {
-                        // Clear only if the add went in and nothing new was typed meanwhile.
-                        if (onSubmit(title) && state.text.toString() == submitted) state.clearText()
+                        try {
+                            // Clear only if the add went in and nothing new was typed meanwhile.
+                            if (onSubmit(title) && state.text.toString() == submitted) state.clearText()
+                        } finally {
+                            submitting = false
+                        }
                     }
                 }
             },

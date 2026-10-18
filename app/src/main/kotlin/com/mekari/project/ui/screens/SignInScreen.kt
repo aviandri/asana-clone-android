@@ -22,6 +22,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -51,7 +52,8 @@ fun SignInScreen(session: AppSession) {
     val appScope = LocalAppScope.current
     var server by rememberSaveable { mutableStateOf(session.settings.serverUrl ?: "") }
     var email by rememberSaveable { mutableStateOf("") }
-    var password by rememberSaveable { mutableStateOf("") }
+    // Not rememberSaveable: the password must never land in the saved-state Bundle.
+    var password by remember { mutableStateOf("") }
     val canSubmit = server.isNotBlank() && email.isNotBlank() && password.isNotEmpty() && !state.isSigningIn
     val submit = {
         if (canSubmit) appScope.launchAction { session.signIn(server, email, password) }
