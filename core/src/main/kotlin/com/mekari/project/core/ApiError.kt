@@ -4,7 +4,6 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * Every failure from `MekariApi` except cancellation: the BE error envelope
@@ -78,7 +77,7 @@ class ApiError(
             val obj = item as? JsonObject ?: return@mapNotNull null
             val message = (obj["message"] as? JsonPrimitive)?.content ?: return@mapNotNull null
             // zod paths may contain numbers (array indices); they become strings.
-            val path = (obj["path"] as? JsonArray).orEmpty().map { it.jsonPrimitive.content }
+            val path = (obj["path"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.content }
             FieldIssue(path, message)
         }
     }

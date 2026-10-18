@@ -11,17 +11,26 @@ interface TokenStore {
     fun load(): String?
     fun save(token: String)
     fun clear()
+
+    /**
+     * Clears the token only if it is still [expected]; true when it did. MUST be atomic with [save]
+     * (one lock around both): a late 401 for an old token races a re-login's save on another thread,
+     * and a separate compare-then-clear would wipe the fresh token.
+     */
+    fun clearIf(expected: String): Boolean
 }
 
 class InMemoryTokenStore(token: String? = null) : TokenStore {
-    @Volatile private var token: String? = token
+    private val lock = Any()
+    private var token: String? = token
 
-    override fun load() = token
-    override fun save(token: String) {
-        this.token = token
-    }
-    override fun clear() {
+    override fun load() = synchronized(lock) { token }
+    override fun save(token: String) = synchronized(lock) { this.token = token }
+    override fun clear() = synchronized(lock) { token = null }
+    override fun clearIf(expected: String): Boolean = synchronized(lock) {
+        if (token != expected) return false
         token = null
+        true
     }
 }
 
@@ -30,7 +39,9 @@ interface ServerSettings {
     var serverUrl: String?
 }
 
-class InMemoryServerSettings(override var serverUrl: String? = null) : ServerSettings
+class InMemoryServerSettings(serverUrl: String? = null) : ServerSettings {
+    @Volatile override var serverUrl: String? = serverUrl
+}
 
 object ServerUrl {
     /**

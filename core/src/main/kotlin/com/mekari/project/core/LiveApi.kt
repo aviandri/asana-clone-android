@@ -83,8 +83,10 @@ class LiveApi(
         )
         val token =
             SessionCookie.token(raw.headers) ?: throw ApiError.decoding("no session cookie in the login response")
+        // Decoded first: a response we can't read must not leave a half session behind.
+        val me = decode(Me.serializer(), raw, "Me")
         tokens.save(token)
-        return decode(Me.serializer(), raw, "Me")
+        return me
     }
 
     override suspend fun logout() {
@@ -264,8 +266,7 @@ class LiveApi(
         if (raw.code == 401) {
             // Only a 401 for the session we still hold ends it: a late answer to a request sent with an
             // older token (the poller, a request from before a re-login) must not sign out a fresh session.
-            if (sentToken != null && tokens.load() == sentToken && path != "/auth/login" && path != "/auth/logout") {
-                tokens.clear()
+            if (sentToken != null && path != "/auth/login" && path != "/auth/logout" && tokens.clearIf(sentToken)) {
                 eventChannel.trySend(ApiEvent.Unauthorized)
             }
         } else if (raw.code == 404 && sentWorkspace != null && isScopedCollection(method, path)) {
@@ -293,17 +294,25 @@ class LiveApi(
             try {
                 decode(raw.body)
             } catch (e: SerializationException) {
-                throw ApiError.decoding("$what: ${e.message?.lineSequence()?.firstOrNull()}")
+                throw ApiError.decoding("$what: ${describe(e)}")
             } catch (e: IllegalArgumentException) {
-                throw ApiError.decoding("$what: ${e.message?.lineSequence()?.firstOrNull()}")
+                throw ApiError.decoding("$what: ${describe(e)}")
             }
         }
+
+    /** The failure and where (kotlinx's "at path: $.data[0].dueDate"), without echoing the JSON input. */
+    private fun describe(e: Exception): String = e.message.orEmpty().lineSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !it.startsWith("JSON input") && !it.startsWith("Use 'ignoreUnknownKeys'") }
+        .joinToString(" ")
 
     companion object {
         const val WORKSPACE_HEADER = "X-Workspace-Id"
         private val JSON_MEDIA = "application/json".toMediaType()
         private val EMPTY_BODY = "".toRequestBody(null)
-        private val SAFE_ID = Regex("^[A-Za-z0-9_-]+$")
+
+        /** The BE issues UUIDs; nothing else reaches a request path. */
+        private val SAFE_ID = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
         /** No CookieJar (the default): the session cookie is handled by hand. */
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
@@ -325,7 +334,7 @@ class LiveApi(
             else -> false
         }
 
-        /** Ids go into URL paths: anything but a plain token (e.g. `..` or `a/b`) is a 404 without a request. */
+        /** Ids go into URL paths: anything but a UUID (e.g. `..` or `a/b`) is a 404 without a request. */
         private fun id(value: String): String {
             if (!SAFE_ID.matches(value)) throw ApiError(ApiError.Code.NOT_FOUND, null, "Not found")
             return value
@@ -374,8 +383,9 @@ object SessionCookie {
         for (piece in header.split(',')) {
             val firstPair = piece.substringBefore(';').trim()
             if (!firstPair.startsWith("$NAME=")) continue
-            // An empty value (a clearing cookie) is not a session.
-            return firstPair.removePrefix("$NAME=").ifEmpty { null }
+            // An empty value (a clearing cookie) is not a session; a later sid may be.
+            val value = firstPair.removePrefix("$NAME=")
+            if (value.isNotEmpty()) return value
         }
         return null
     }
