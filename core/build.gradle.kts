@@ -8,18 +8,21 @@ plugins {
 
 kotlin {
     jvmToolchain(17)
+    // SerialDescriptor.serialName: used only to name types in decoding-error messages.
+    compilerOptions.optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
+    // runTest helpers (advanceTimeBy, runCurrent, …) are still marked experimental.
+    sourceSets.test { languageSettings.optIn("kotlinx.coroutines.ExperimentalCoroutinesApi") }
 }
 
 dependencies {
     api(libs.kotlinx.coroutines.core)
     api(libs.kotlinx.serialization.json)
     api(libs.okhttp)
-    implementation(libs.retrofit)
-    implementation(libs.retrofit.kotlinx.serialization)
 
     testImplementation(libs.junit4)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
+    testImplementation(libs.okhttp.mockwebserver)
 }
 
 tasks.test {
