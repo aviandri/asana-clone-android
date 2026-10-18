@@ -50,7 +50,7 @@ Gradle at 2 GB. Robolectric covers UI tests locally; CI runs the emulator.
 | `unit` | `./gradlew test` (`:core`, `:feature`, Robolectric `:app` tests) |
 | `lint` | `./gradlew lint ktlintCheck`; reports uploaded |
 | `contract` | BE `main` (Postgres service, migrate, full seed) + the `*ContractTest` tests, failing if they were skipped |
-| `instrumented` | emulator (API 34 x86_64, google_apis, KVM): `connectedDebugAndroidTest` |
+| `instrumented` | emulator (API 34 x86_64, google_apis, KVM): `connectedDebugAndroidTest`, then a launch smoke (`.github/scripts/launch-smoke.sh`: install the debug APK, start it with the fake-API flag, fail if it isn't running and resumed after 5 s or logged a crash/ANR) |
 | `debug-apk` | `:app:assembleDebug`; on pushes to `main` uploads `MekariProject-android-debug-<sha>` |
 | `release` | `v*` tags only: signed release APK, published as a GitHub Release (see below) |
 

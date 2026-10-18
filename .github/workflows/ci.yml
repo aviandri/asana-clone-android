@@ -149,7 +149,8 @@ jobs:
           retention-days: 14
 
   instrumented:
-    # Emulator tests (API 34 x86_64, KVM), launched with the fake-API flag.
+    # Emulator tests (API 34 x86_64, KVM) with the fake-API flag, then a 5 s launch smoke of the
+    # debug APK on the same emulator.
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -174,7 +175,11 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: ./gradlew connectedDebugAndroidTest
+          # The runner executes each line on its own, so multi-step logic lives in a script.
+          # connectedDebugAndroidTest uninstalls the app afterwards; the smoke reinstalls it.
+          script: |
+            ./gradlew connectedDebugAndroidTest
+            .github/scripts/launch-smoke.sh
       - name: Test reports
         if: failure()
         uses: actions/upload-artifact@v4
