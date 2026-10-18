@@ -8,6 +8,8 @@ plugins {
 
 kotlin {
     jvmToolchain(17)
+    // runTest helpers (advanceTimeBy, runCurrent, …) are still marked experimental.
+    sourceSets.test { languageSettings.optIn("kotlinx.coroutines.ExperimentalCoroutinesApi") }
     // SerialDescriptor.serialName: used only to name types in decoding-error messages.
     compilerOptions.optIn.add("kotlinx.serialization.ExperimentalSerializationApi")
 }
