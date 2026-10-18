@@ -52,7 +52,6 @@ import com.mekari.project.AppContainer
 import com.mekari.project.TestTags
 import com.mekari.project.feature.AppSession
 import com.mekari.project.feature.Auth
-import com.mekari.project.feature.DeepLinkResult
 import com.mekari.project.feature.LoadState
 import com.mekari.project.feature.NavigationTarget
 import com.mekari.project.feature.WorkspaceScope
@@ -104,6 +103,13 @@ fun MekariApp(session: AppSession, container: AppContainer) {
         }
         scope?.let { key(it) { CompletionOverlays(it, snackbar) } }
         SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter).padding(bottom = 88.dp))
+    }
+
+    val linkNotice by container.linkNotice.collectAsStateWithLifecycle()
+    LaunchedEffect(linkNotice) {
+        val notice = linkNotice ?: return@LaunchedEffect
+        container.linkNotice.value = null
+        snackbar.showSnackbar(notice)
     }
 
     // "You no longer have access to X" and friends.
@@ -223,17 +229,13 @@ private fun MainShell(
     }
     var quickAdd by rememberSaveable { mutableStateOf(false) }
 
-    // Deep links and notification taps (mekariproject://…) and the launcher's quick-add shortcut. They wait
-    // in the container until there's a signed-in shell to open them in.
-    val pendingLink by container.pendingLink.collectAsStateWithLifecycle()
-    val appScope = LocalAppScope.current
-    LaunchedEffect(pendingLink) {
-        val link = pendingLink ?: return@LaunchedEffect
-        container.pendingLink.value = null
-        when (val result = appScope.runAction { session.resolve(link) }) {
-            is DeepLinkResult.Open -> open(result.target)
-            else -> snackbar.showSnackbar("You don't have access to this, or it no longer exists.")
-        }
+    // A resolved deep link or notification tap (AppContainer resolves it, switching workspace if needed, so this
+    // is the NEW shell after a switch) and the launcher's quick-add shortcut: consumed once.
+    val pendingTarget by container.pendingTarget.collectAsStateWithLifecycle()
+    LaunchedEffect(pendingTarget) {
+        val target = pendingTarget ?: return@LaunchedEffect
+        container.pendingTarget.value = null
+        open(target)
     }
     val pendingQuickAdd by container.pendingQuickAdd.collectAsStateWithLifecycle()
     LaunchedEffect(pendingQuickAdd) {

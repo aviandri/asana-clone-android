@@ -107,9 +107,7 @@ fun SearchScreen(scope: WorkspaceScope, onOpen: (NavigationTarget) -> Unit, modi
                             leadingContent = { Avatar(user.name, user.avatarColor, size = 32.dp) },
                             headlineContent = { Text(user.name) },
                             supportingContent = { Text(user.email) },
-                            modifier = Modifier.clickable {
-                                context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:${user.email}")))
-                            }
+                            modifier = Modifier.clickable { emailPerson(context, user.email) }
                         )
                     }
                 }
@@ -132,5 +130,14 @@ private fun Header(text: String) {
 private fun Hint(text: String) {
     Box(Modifier.fillMaxSize().padding(32.dp), contentAlignment = Alignment.TopCenter) {
         Text(text, color = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+/** An email to a person from search. The address comes from the server: encoded, and no mail app is fine. */
+private fun emailPerson(context: android.content.Context, email: String) {
+    try {
+        context.startActivity(Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:" + Uri.encode(email, "@"))))
+    } catch (_: android.content.ActivityNotFoundException) {
+        android.widget.Toast.makeText(context, "No email app on this device", android.widget.Toast.LENGTH_SHORT).show()
     }
 }

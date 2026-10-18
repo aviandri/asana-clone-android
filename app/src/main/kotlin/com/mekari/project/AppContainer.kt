@@ -23,7 +23,12 @@ import com.mekari.project.core.ServerSettings
 import com.mekari.project.core.TokenStore
 import com.mekari.project.core.fake.FakeApi
 import com.mekari.project.feature.AppSession
+import com.mekari.project.feature.Auth
+import com.mekari.project.feature.DeepLinkResult
 import com.mekari.project.feature.FeaturePrefs
+import com.mekari.project.feature.LoadState
+import com.mekari.project.feature.LocalNotice
+import com.mekari.project.feature.NavigationTarget
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -36,7 +41,12 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -119,8 +129,17 @@ class AppContainer(private val context: Context) {
         write { it[Keys.SOUND] = on }
     }
 
-    /** A mekariproject:// link (or a notification tap) waiting for the signed-in shell to open it. */
+    /** A mekariproject:// link (or a notification tap), resolved in the app scope (see [followLinks]). */
     val pendingLink = MutableStateFlow<DeepLink?>(null)
+
+    /**
+     * Where a resolved link goes. Resolving may switch workspace, which replaces the shell, so the result
+     * can't be awaited inside it: whichever shell is current (the NEW one after a switch) consumes it once.
+     */
+    val pendingTarget = MutableStateFlow<NavigationTarget?>(null)
+
+    /** "You don't have access…" for a link that couldn't be opened, shown by the root. */
+    val linkNotice = MutableStateFlow<String?>(null)
 
     /** The launcher's quick-add shortcut, waiting for the shell. */
     val pendingQuickAdd = MutableStateFlow(false)
@@ -140,13 +159,54 @@ class AppContainer(private val context: Context) {
         liveSession = !fakeApi
         appScope.launch { session.start() }
         followForeground(session)
-        // Background inbox checks: live sessions only (the fake API never schedules WorkManager).
+        followLinks(session)
+        followInboxBaseline(session)
+        // Background inbox checks: live sessions only (the fake API never schedules WorkManager). Decided from
+        // auth: Restoring (every cold start) changes nothing, so the periodic job isn't reset or dropped.
         if (!fakeApi) {
             appScope.launch {
-                session.state.collect { state -> updateBackgroundCheck(signedIn = state.me != null) }
+                session.state.map { it.auth }
+                    .filter { it !is Auth.Restoring }
+                    .map { it is Auth.SignedIn }
+                    .distinctUntilChanged()
+                    .collect { signedIn -> updateBackgroundCheck(signedIn) }
             }
         }
         return session
+    }
+
+    /** Links resolve here, outside any shell: once signed in, resolve (switching workspace if needed), then hand off. */
+    private fun followLinks(session: AppSession) {
+        appScope.launch {
+            pendingLink.filterNotNull().collect { link ->
+                pendingLink.value = null
+                session.state.first { it.auth is Auth.SignedIn }
+                when (val result = session.resolve(link)) {
+                    is DeepLinkResult.Open -> pendingTarget.value = result.target
+                    else -> linkNotice.value = "You don't have access to this, or it no longer exists."
+                }
+            }
+        }
+    }
+
+    /**
+     * The background check's baseline follows what the app itself showed: each foreground inbox load becomes
+     * the "seen" set for that user + workspace, so items already seen in the Inbox are never notified later.
+     */
+    private fun followInboxBaseline(session: AppSession) {
+        appScope.launch {
+            session.scope.collectLatest { scope ->
+                scope ?: return@collectLatest
+                scope.inbox.state
+                    .filter { it.phase == LoadState.Loaded }
+                    .map { state -> state.notifications.filter { !it.read }.map { it.id }.toSet() }
+                    .distinctUntilChanged()
+                    .collect { unread ->
+                        val key = seenKey(scope.me.id, scope.id)
+                        write { it[key] = unread }
+                    }
+            }
+        }
     }
 
     private var liveSession = false
@@ -163,17 +223,21 @@ class AppContainer(private val context: Context) {
      * The background check (InboxCheckWorker): the stored session against the server, its current workspace's
      * unread items, diffed against the ids seen last time. Null when there's no session or the call fails.
      */
-    suspend fun checkInbox(): List<com.mekari.project.feature.LocalNotice>? {
+    suspend fun checkInbox(): List<LocalNotice>? {
         val server = serverSettings.serverUrl ?: return null
         if (tokenStore.load() == null) return null
         return try {
             val api = LiveApi(server, tokenStore)
-            val workspace = api.me().currentWorkspace ?: return null
+            val me = api.me()
+            val workspace = me.currentWorkspace ?: return null
             api.setWorkspace(workspace.id)
             val page = api.notifications(unreadOnly = true)
-            val previous = context.dataStore.data.first()[Keys.SEEN]
+            // Per user + workspace: a switch or a different account starts its own baseline (no flood).
+            val key = seenKey(me.user.id, workspace.id)
+            val previous = context.dataStore.data.first()[key]
             val (notices, seen) = diffInbox(previous, page)
-            write { it[Keys.SEEN] = seen }
+            // Synchronously, before the worker returns: the process may die right after.
+            context.dataStore.edit { it[key] = seen }
             notices
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
@@ -249,13 +313,15 @@ class AppContainer(private val context: Context) {
         writes.trySend(change)
     }
 
+    private fun seenKey(userId: String, workspaceId: String) =
+        stringSetPreferencesKey("seenUnread.$userId.$workspaceId")
+
     private object Keys {
         val SERVER = stringPreferencesKey("serverUrl")
         val TOKEN = stringPreferencesKey("session")
         val CELEBRATIONS = booleanPreferencesKey("celebrationsEnabled")
         val NOTIFICATIONS = booleanPreferencesKey("notificationsEnabled")
         val SOUND = booleanPreferencesKey("completionSound")
-        val SEEN = stringSetPreferencesKey("seenUnreadNotifications")
         val ASKED_NOTIFICATIONS = booleanPreferencesKey("askedNotificationPermission")
     }
 }

@@ -16,8 +16,16 @@ import androidx.compose.ui.draganddrop.mimeTypes
 import androidx.compose.ui.draganddrop.toAndroidDragEvent
 import com.mekari.project.core.TaskItem
 
-/** The private clip label task drags carry, so text dragged in from another app is never a "move". */
+/** The clip label task drags carry (a first filter; any app could copy it, see [ActiveTaskDrag]). */
 const val TASK_DRAG_LABEL = "com.mekari.project.task"
+
+/**
+ * The task this process is dragging right now. Another app's global drag can carry our label, so a drop
+ * counts only if its id is the one we started: foreign drops are ignored.
+ */
+object ActiveTaskDrag {
+    @Volatile var taskId: String? = null
+}
 
 /**
  * Which drops are moves (the Mac's DropRules): only this project's tasks, only for editors, and never
@@ -34,6 +42,7 @@ fun Modifier.taskDragSource(taskId: String, enabled: Boolean): Modifier {
     if (!enabled) return this
     return dragAndDropSource {
         detectTapGestures(onLongPress = {
+            ActiveTaskDrag.taskId = taskId
             startTransfer(
                 DragAndDropTransferData(
                     ClipData(TASK_DRAG_LABEL, arrayOf(ClipDescription.MIMETYPE_TEXT_PLAIN), ClipData.Item(taskId))
@@ -43,11 +52,12 @@ fun Modifier.taskDragSource(taskId: String, enabled: Boolean): Modifier {
     }
 }
 
-/** The dragged task id, if this is one of our task drags. */
+/** The dragged task id, if this is OUR drag: our label, and the id this process started dragging. */
 fun DragAndDropEvent.taskId(): String? {
     val event = toAndroidDragEvent()
     if (event.clipDescription?.label != TASK_DRAG_LABEL) return null
-    return event.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString()
+    val id = event.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString() ?: return null
+    return id.takeIf { it == ActiveTaskDrag.taskId }
 }
 
 /**
@@ -67,7 +77,10 @@ fun Modifier.taskDropTarget(onHover: (Boolean) -> Unit, onTask: (String) -> Bool
 
             override fun onExited(event: DragAndDropEvent) = onHover(false)
 
-            override fun onEnded(event: DragAndDropEvent) = onHover(false)
+            override fun onEnded(event: DragAndDropEvent) {
+                onHover(false)
+                ActiveTaskDrag.taskId = null
+            }
         }
     }
     return dragAndDropTarget(

@@ -74,6 +74,23 @@ class IntentHandlingTest : AppFlowTestBase() {
         assertNull("consumed", container.pendingLink.value)
     }
 
+    /** Review blocker: a link into ANOTHER workspace switches to it and still opens the task. */
+    @Test
+    fun aLinkIntoAnotherWorkspaceSwitchesAndOpensTheTask() {
+        val fake = com.mekari.project.core.fake.FakeApi()
+        launch(fake)
+        waitForTag(TestTags.MY_TASKS)
+        val session = container.session(fakeApi = true)
+        assertEquals(DemoIds.MEKARI, session.state.value.current?.id)
+        val pilotTask = fake.currentTasks().first { it.workspaceId == DemoIds.ACME_PILOT && it.parentId == null }
+        deliver(view("mekariproject://task/${pilotTask.id}"))
+        waitFor("the switch to Acme Pilot") { session.state.value.current?.id == DemoIds.ACME_PILOT }
+        waitForTag(TestTags.TASK_DETAIL)
+        waitFor("the linked task's title") {
+            compose.onNodeWithTagText(TestTags.TASK_TITLE) == pilotTask.title
+        }
+    }
+
     @Test
     fun theQuickAddShortcutTrustsOnlyItsAction() {
         launch()
