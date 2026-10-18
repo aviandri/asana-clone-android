@@ -19,3 +19,11 @@ dependencies {
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.turbine)
 }
+
+tasks.test {
+    // Contract tests run only when MP_BASE_URL points at a seeded backend (CI `contract` job).
+    val baseUrl = System.getenv("MP_BASE_URL") ?: ""
+    environment("MP_BASE_URL", baseUrl)
+    // An input, so results cached without a backend (contract tests skipped) are never reused with one.
+    inputs.property("mpBaseUrl", baseUrl)
+}

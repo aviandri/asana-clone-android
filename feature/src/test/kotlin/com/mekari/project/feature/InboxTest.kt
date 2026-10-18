@@ -46,21 +46,40 @@ class InboxTest {
     }
 
     @Test
-    fun aCallerAwaitingLoadGetsItsDataButAnOlderAnswerNeverWins() = runTest {
+    fun aLoadInFlightIsJoinedNotRepeated() = runTest {
         val fake = demoFake()
         val scope = workspaceScope(fake)
         fake.hold(FakeEndpoint.NOTIFICATIONS)
-        val older = launch { scope.inbox.load() }
+        val poll = launch { scope.inbox.load() } // e.g. the poller starting on a switch…
         runCurrent()
-        fake.addNotification(notification("n-later"), DemoIds.ALICE)
-        val newer = launch { scope.inbox.load() }
+        val refresh = launch { scope.inbox.load() } // …and the foreground refresh at the same moment
         runCurrent()
-        fake.release(FakeEndpoint.NOTIFICATIONS, newest = true)
-        newer.join()
-        assertEquals(3, scope.inbox.state.value.notifications.size)
+        assertEquals(1, fake.parkedCount(FakeEndpoint.NOTIFICATIONS))
         fake.release(FakeEndpoint.NOTIFICATIONS, all = true)
-        older.join()
-        assertEquals(3, scope.inbox.state.value.notifications.size)
+        poll.join()
+        refresh.join()
+        assertEquals(1, fake.calls.count { it.endpoint == FakeEndpoint.NOTIFICATIONS })
+        assertEquals(2, scope.inbox.state.value.notifications.size)
+    }
+
+    @Test
+    fun aMarkReadFailingAfterANewerLoadDoesNotRevertIt() = runTest {
+        val fake = demoFake()
+        val scope = workspaceScope(fake)
+        scope.inbox.load()
+        assertEquals(1, scope.inbox.state.value.unreadCount)
+        val unread = scope.inbox.state.value.notifications.first { !it.read }
+        fake.hold(FakeEndpoint.MARK_READ)
+        fake.failNext(FakeEndpoint.MARK_READ, ApiError.transport())
+        val mark = launch { scope.inbox.markRead(unread.id) }
+        runCurrent()
+        assertEquals("optimistic", 0, scope.inbox.state.value.unreadCount)
+        scope.inbox.load() // newer: the server still has it unread
+        assertEquals(1, scope.inbox.state.value.unreadCount)
+        fake.release(FakeEndpoint.MARK_READ, all = true)
+        mark.join()
+        assertEquals("the failure doesn't revert on top of newer state", 1, scope.inbox.state.value.unreadCount)
+        assertEquals(ApiError.Code.TRANSPORT, scope.inbox.state.value.lastError?.code)
     }
 
     @Test

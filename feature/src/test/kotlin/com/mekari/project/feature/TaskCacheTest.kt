@@ -6,7 +6,6 @@ import com.mekari.project.core.Patch
 import com.mekari.project.core.TaskChanges
 import com.mekari.project.core.fake.DemoIds
 import com.mekari.project.core.fake.FakeEndpoint
-import java.time.Instant
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
@@ -67,9 +66,44 @@ class TaskCacheTest {
 
         scope.tasks.remove(id)
         assertNull(scope.tasks[id])
-        scope.tasks.upsert(listOf(fresh.copy(updatedAt = Instant.now())))
+        scope.tasks.upsert(listOf(fresh.copy(updatedAt = fresh.updatedAt.plusSeconds(3600))))
         scope.tasks.upsert(fake.task(id))
         assertNull("a later copy never brings it back", scope.tasks[id])
+    }
+
+    @Test
+    fun editOnesAnswerArrivingAfterEditTwosKeepsBoth() = runTest {
+        val fake = demoFake()
+        val scope = workspaceScope(fake)
+        scope.tasks.upsert(fake.task(id))
+        fake.hold(FakeEndpoint.UPDATE_TASK)
+        val one = launch { scope.tasks.update(id, TaskChanges(title = "One")) }
+        runCurrent()
+        val two = launch { scope.tasks.update(id, TaskChanges(priority = com.mekari.project.core.Priority.LOW)) }
+        runCurrent()
+        fake.release(FakeEndpoint.UPDATE_TASK, newest = true) // edit 2 answers first (without the title)
+        two.join()
+        assertEquals("edit 1 is still in flight and stays visible", "One", scope.title(id))
+        fake.release(FakeEndpoint.UPDATE_TASK, all = true)
+        one.join()
+        assertEquals("One", scope.title(id))
+        assertEquals(com.mekari.project.core.Priority.LOW, scope.tasks[id]?.priority)
+        assertFalse(scope.tasks.hasPendingEdits(id))
+    }
+
+    @Test
+    fun aPendingEditStaysVisibleThroughAListLoad() = runTest {
+        val fake = demoFake()
+        val scope = workspaceScope(fake)
+        scope.myTasks.refresh()
+        fake.hold(FakeEndpoint.UPDATE_TASK)
+        val edit = launch { scope.tasks.update(id, TaskChanges(title = "Renamed")) }
+        runCurrent()
+        scope.myTasks.refresh() // the server still has the old title
+        assertEquals("Renamed", scope.title(id))
+        fake.release(FakeEndpoint.UPDATE_TASK, all = true)
+        edit.join()
+        assertEquals("Renamed", scope.title(id))
     }
 
     @Test
