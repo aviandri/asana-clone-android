@@ -49,6 +49,14 @@ kotlin {
     jvmToolchain(17)
 }
 
+androidComponents {
+    // Robolectric Compose tests launch ComponentActivity from ui-test-manifest, which is debug-only (it
+    // must never ship in the release app). Release unit tests would only duplicate the debug ones.
+    beforeVariants(selector().withBuildType("release")) { variant ->
+        variant.enableUnitTest = false
+    }
+}
+
 composeCompiler {
     // :core models are immutable but can't carry @Immutable (no Compose in :core): rows of them skip
     // recomposition when unchanged (ARCHITECTURE.md, TaskCache).
