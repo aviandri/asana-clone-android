@@ -104,6 +104,7 @@ import com.mekari.project.ui.components.CompletionTitle
 import com.mekari.project.ui.components.GuestChip
 import com.mekari.project.ui.components.InlineAddField
 import com.mekari.project.ui.components.parseHexColor
+import com.mekari.project.ui.components.rememberAddFieldState
 import com.mekari.project.ui.launchAction
 import com.mekari.project.ui.runAction
 import java.time.Instant
@@ -170,7 +171,7 @@ fun TaskDetailScreen(
             return@Scaffold
         }
         val canEdit = state.canEdit
-        val subtaskField = rememberTextFieldState()
+        val subtaskField = rememberAddFieldState()
         LazyColumn(
             Modifier.fillMaxSize().padding(padding),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)
@@ -706,6 +707,7 @@ fun UserPickerDialog(
     val state by search.state.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(Unit) { search.setQuery("") }
+    ErrorSnackbar(state.lastError) { search.clearError() }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },

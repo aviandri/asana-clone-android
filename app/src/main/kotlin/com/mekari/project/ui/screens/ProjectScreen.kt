@@ -21,7 +21,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -71,10 +70,12 @@ import com.mekari.project.feature.WorkspaceScope
 import com.mekari.project.ui.Browser
 import com.mekari.project.ui.Formatting
 import com.mekari.project.ui.LocalAppScope
+import com.mekari.project.ui.components.AddFieldState
 import com.mekari.project.ui.components.Avatar
 import com.mekari.project.ui.components.CompletionCheckbox
 import com.mekari.project.ui.components.DropRules
 import com.mekari.project.ui.components.InlineAddField
+import com.mekari.project.ui.components.rememberAddFieldStates
 import com.mekari.project.ui.components.taskDragSource
 import com.mekari.project.ui.components.taskDropTarget
 import com.mekari.project.ui.launchAction
@@ -100,9 +101,10 @@ fun ProjectScreen(
     val appScope = LocalAppScope.current
     var menu by remember { mutableStateOf(false) }
     var addingSection by remember { mutableStateOf(false) }
-    // One add field per section, owned here (outside the lazy items): recycling never resets them.
-    val addFields = remember { mutableMapOf<String?, TextFieldState>() }
-    val fieldFor: (String?) -> TextFieldState = { section -> addFields.getOrPut(section) { TextFieldState() } }
+    // One add field per section, owned here (outside the lazy items): recycling never resets them, and the
+    // drafts survive rotation.
+    val addFields = rememberAddFieldStates()
+    val fieldFor: (String?) -> AddFieldState = { section -> addFields[section ?: "none"] }
     LaunchedEffect(store) { if (state.phase == LoadState.Idle) store.load() }
     ErrorSnackbar(state.lastError) { store.clearError() }
     val server = session.settings.serverUrl
@@ -187,7 +189,7 @@ fun ProjectScreen(
                 }
                 when (state.viewMode) {
                     ProjectStore.ViewMode.LIST -> ProjectList(scope, store, state, fieldFor, onOpenTask, rowMenu)
-                    ProjectStore.ViewMode.BOARD -> ProjectBoard(scope, store, state, fieldFor, onOpenTask)
+                    ProjectStore.ViewMode.BOARD -> ProjectBoard(scope, store, state, fieldFor, onOpenTask, rowMenu)
                 }
             }
         }
@@ -231,7 +233,7 @@ private fun ProjectList(
     scope: WorkspaceScope,
     store: ProjectStore,
     state: ProjectStore.State,
-    fieldFor: (String?) -> TextFieldState,
+    fieldFor: (String?) -> AddFieldState,
     onOpenTask: (String) -> Unit,
     rowMenu: @Composable (TaskItem) -> Unit
 ) {
@@ -254,7 +256,7 @@ private fun ProjectList(
                             .background(
                                 if (highlight) colors.primaryContainer else colors.surface
                             )
-                            .clickable(enabled = state.canEdit && sectionId != null) {
+                            .clickable(enabled = state.canEdit && sectionId != null, onClickLabel = "Rename section") {
                                 renaming = state.sections.firstOrNull { it.id == sectionId }
                             }
                             .padding(horizontal = 16.dp, vertical = 10.dp)
@@ -317,8 +319,9 @@ private fun ProjectBoard(
     scope: WorkspaceScope,
     store: ProjectStore,
     state: ProjectStore.State,
-    fieldFor: (String?) -> TextFieldState,
-    onOpenTask: (String) -> Unit
+    fieldFor: (String?) -> AddFieldState,
+    onOpenTask: (String) -> Unit,
+    cardMenu: @Composable (TaskItem) -> Unit
 ) {
     val tasks by scope.tasks.tasks.collectAsStateWithLifecycle()
     val appScope = LocalAppScope.current
@@ -363,7 +366,9 @@ private fun ProjectBoard(
                                     today = today,
                                     highlight = cardHighlight,
                                     onToggle = { appScope.launchAction { store.toggleComplete(id) } },
-                                    onOpen = { onOpenTask(id) }
+                                    onOpen = { onOpenTask(id) },
+                                    // The non-drag way to move a card (Move to section), as on List rows.
+                                    menu = { cardMenu(task) }
                                 )
                             }
                         }
@@ -392,7 +397,8 @@ private fun BoardCard(
     today: LocalDate,
     highlight: Boolean,
     onToggle: () -> Unit,
-    onOpen: () -> Unit
+    onOpen: () -> Unit,
+    menu: @Composable () -> Unit
 ) {
     val colors = MaterialTheme.colorScheme
     Surface(
@@ -433,6 +439,7 @@ private fun BoardCard(
                     textDecoration = if (task.completed) TextDecoration.LineThrough else null,
                     modifier = Modifier.padding(top = 13.dp).weight(1f)
                 )
+                menu()
             }
             Row(Modifier.padding(start = 12.dp), verticalAlignment = Alignment.CenterVertically) {
                 task.dueDate?.let { due ->

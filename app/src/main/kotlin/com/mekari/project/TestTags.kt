@@ -57,6 +57,7 @@ object TestTags {
     const val QUICK_ADD_SUBMIT = "quickAdd.submit"
     const val SETTINGS = "screen.settings"
     const val SIGN_OUT = "settings.signOut"
+    const val NOTIFICATIONS_BLOCKED = "settings.notificationsBlocked"
     const val WORKSPACE_SHEET = "sheet.workspaces"
     fun workspaceOption(id: String) = "workspace.option.$id"
     fun subtaskRow(id: String) = "subtask.row.$id"

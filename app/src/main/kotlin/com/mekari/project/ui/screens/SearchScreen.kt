@@ -48,7 +48,7 @@ fun SearchScreen(scope: WorkspaceScope, onOpen: (NavigationTarget) -> Unit, modi
     val state by scope.search.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
     var query by rememberSaveable { mutableStateOf("") }
-    ErrorSnackbar(state.lastError) {}
+    ErrorSnackbar(state.lastError) { scope.search.clearError() }
 
     Column(modifier.fillMaxSize().testTag(TestTags.SEARCH)) {
         OutlinedTextField(

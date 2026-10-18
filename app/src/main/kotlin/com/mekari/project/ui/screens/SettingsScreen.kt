@@ -1,5 +1,11 @@
 package com.mekari.project.ui.screens
 
+import android.content.ActivityNotFoundException
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.provider.Settings
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -26,10 +32,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mekari.project.AppContainer
+import com.mekari.project.InboxNotifications
 import com.mekari.project.TestTags
 import com.mekari.project.feature.AppSession
 import com.mekari.project.ui.LocalAppScope
@@ -47,6 +56,13 @@ fun SettingsScreen(session: AppSession, container: AppContainer, onBack: () -> U
     val prefs by container.prefs.collectAsStateWithLifecycle()
     val appScope = LocalAppScope.current
     val requestPermission = rememberNotificationPermissionRequest()
+    val context = LocalContext.current
+    // Re-checked on resume: the user may have just changed it in system settings.
+    var canPost by remember { mutableStateOf(InboxNotifications.canPost(context)) }
+    LifecycleResumeEffect(Unit) {
+        canPost = InboxNotifications.canPost(context)
+        onPauseOrDispose { }
+    }
     // FeaturePrefs isn't observable: mirror it locally so the switch moves when tapped.
     var celebrations by remember { mutableStateOf(container.featurePrefs.celebrationsEnabled) }
 
@@ -79,6 +95,17 @@ fun SettingsScreen(session: AppSession, container: AppContainer, onBack: () -> U
                 container.setNotifications(it)
                 if (it) requestPermission()
             }
+            if (prefs.notificationsEnabled && !canPost) {
+                // On, but blocked by the system (denied, or turned off in Settings): show the way out.
+                ListItem(
+                    headlineContent = { Text("Notifications are blocked") },
+                    supportingContent = { Text("Allow them for Mekari Project in system settings.") },
+                    trailingContent = {
+                        TextButton(onClick = { openNotificationSettings(context) }) { Text("Open settings") }
+                    },
+                    modifier = Modifier.testTag(TestTags.NOTIFICATIONS_BLOCKED)
+                )
+            }
             SwitchRow("Sound", "A soft tick when you complete a task", prefs.completionSound) {
                 container.setCompletionSound(it)
             }
@@ -104,4 +131,18 @@ private fun SwitchRow(title: String, detail: String, checked: Boolean, onChange:
         supportingContent = { Text(detail) },
         trailingContent = { Switch(checked = checked, onCheckedChange = onChange) }
     )
+}
+
+/** The app's notification settings page (Android 8+), else the app's details page. */
+private fun openNotificationSettings(context: Context) {
+    val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+    } else {
+        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.fromParts("package", context.packageName, null))
+    }
+    try {
+        context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    } catch (_: ActivityNotFoundException) {
+        // No settings screen to open on this device.
+    }
 }
