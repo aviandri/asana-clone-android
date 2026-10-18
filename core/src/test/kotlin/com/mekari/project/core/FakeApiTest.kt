@@ -43,7 +43,11 @@ class FakeApiTest {
     fun signedOutBootAndLogin() = runTest {
         val fake = FakeApi(FakeSeed.demo(today), signedInAs = null)
         assertFalse(fake.hasSession)
-        expectError(ApiError.Code.UNAUTHORIZED) { fake.me() }
+        fake.events.test {
+            // Like LiveApi: signed out, no token is sent, so no Unauthorized event.
+            expectError(ApiError.Code.UNAUTHORIZED) { fake.me() }
+            expectNoEvents()
+        }
         expectError(ApiError.Code.UNAUTHORIZED) { fake.login("alice@example.com", "nope") }
         val me = fake.login("ALICE@example.com", DemoIds.PASSWORD)
         assertEquals(DemoIds.ALICE, me.id)

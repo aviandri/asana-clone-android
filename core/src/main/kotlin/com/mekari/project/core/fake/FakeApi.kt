@@ -622,7 +622,13 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
         return synchronized(lock) {
             failures[endpoint]?.let { (failure, remaining) ->
                 if (remaining > 1) failures[endpoint] = failure to remaining - 1 else failures.remove(endpoint)
-                if (failure.code == ApiError.Code.UNAUTHORIZED && endpoint != FakeEndpoint.LOGIN) {
+                // Like LiveApi: only a request that carried a session ends it; login and logout never emit.
+                val unauthorized = failure.code == ApiError.Code.UNAUTHORIZED
+                if (unauthorized &&
+                    currentUserId != null &&
+                    endpoint != FakeEndpoint.LOGIN &&
+                    endpoint != FakeEndpoint.LOGOUT
+                ) {
                     currentUserId = null
                     eventChannel.trySend(ApiEvent.Unauthorized)
                 }
@@ -632,10 +638,9 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
         }
     }
 
-    private fun requireUser(): String = currentUserId ?: run {
-        eventChannel.trySend(ApiEvent.Unauthorized)
-        throw ApiError(ApiError.Code.UNAUTHORIZED, 401, "Not signed in")
-    }
+    /** Signed out means no token was sent, so (like LiveApi) a 401 without an Unauthorized event. */
+    private fun requireUser(): String =
+        currentUserId ?: throw ApiError(ApiError.Code.UNAUTHORIZED, 401, "Not signed in")
 
     private fun activeMembership(userId: String, workspaceId: String): FakeSeed.Membership? {
         if (users.none { it.summary.id == userId && it.isActive }) return null

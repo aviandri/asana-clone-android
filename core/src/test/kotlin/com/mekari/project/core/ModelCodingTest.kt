@@ -220,6 +220,12 @@ class ModelCodingTest {
         )
         assertTrue(noWorkspace.isNoWorkspace)
 
+        val odd = ApiError.from(
+            400,
+            """{"error":{"code":"VALIDATION","message":"m","details":[{"path":["a",{"x":1},2],"message":"bad"}]}}"""
+        )
+        assertEquals("a non-primitive path element is skipped, not a crash", listOf("a", "2"), odd.issues.single().path)
+
         val other = ApiError.from(
             418,
             """{"error":{"code":"TEAPOT","message":"Short and stout","details":{"not":"an array"}}}"""
