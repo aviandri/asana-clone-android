@@ -100,3 +100,32 @@ wins. Ask the orchestrator before diverging from either.
   5. **App complete** (UI engineer): projects (List/Board + drag), inbox, search, quick add + shortcut, completion animation + petals, notifications worker, deep links, open in browser.
   6. **Release** (platform): signed release APK on tags.
 - Device QA is the Mac session (`msnnb-…`, over Remote Control): the arm64 emulator (`system-images;android-35;google_apis;arm64-v8a`) plus the user's phone over USB, using CI artifacts.
+
+## 8. Attachments & links (v0.2, BE SPEC §13)
+
+Contract, permissions and the shared client UX are in BE `docs/SPEC.md` §13; this is the Android part.
+- **:core/:feature:** `Attachment` model (open `kind`), endpoints, multipart upload **streamed
+  from a `content://` Uri** (custom OkHttp `RequestBody`, never fully in memory), progress +
+  cancel, `413 PAYLOAD_TOO_LARGE`. Upload state lives in the feature store (survives rotation;
+  process death = the user retries). Downloads go to **`cacheDir/attachments/<id>/<name>`**, keyed
+  by `ETag`, LRU cap **500 MB**; **wiped on sign-out and on losing workspace access**.
+- **Thumbnails:** Coil 3 with the app's OkHttp client (auth interceptor, no CookieJar) for
+  `thumbnailPath` / link icon/image. Memory + disk cache, also wiped on sign-out.
+- **Preview in-app:** images (pinch-zoom, swipe through the task's images), **PDF**
+  (`PdfRenderer`, page pager), **video/audio** (Media3 ExoPlayer from the downloaded file), plain
+  text. Other types: type icon + actions.
+- **Open with another app:** `ACTION_VIEW` with a **`FileProvider`** `content://` Uri (only the
+  attachments cache path exposed), `FLAG_GRANT_READ_URI_PERMISSION`, `Intent.createChooser`;
+  "No app can open this file" snackbar when none. **Share** (`ACTION_SEND`). **Save to device** via
+  SAF `ACTION_CREATE_DOCUMENT` (works on API 26+, no storage permission). **Open in browser**:
+  Custom Tabs for the task web URL. LINK: tap opens via `ACTION_VIEW` (App Links route Figma,
+  YouTube, Drive… to their apps), with "Open in browser" (Custom Tabs) and "Copy link" in the menu.
+  Only `http`/`https` URLs are ever opened. Never request `REQUEST_INSTALL_PACKAGES`.
+- **Add:** bottom sheet: **Photo or video** (system Photo Picker, `PickMultipleVisualMedia`),
+  **File** (`OpenMultipleDocuments`), **Camera** (`TakePicture` into a FileProvider temp Uri, no
+  CAMERA permission), **Link** (URL + optional title). Read the display name/size via
+  `OpenableColumns`; check 100 MB before upload.
+- 48 dp targets, TalkBack labels ("Attachment, report.pdf, 2.3 MB"), works on phone and the
+  ≥ 840 dp list-detail layout. Reduced motion respected.
+- Tests: Robolectric for the stores/upload body/cache wipe; instrumented: fake API fixtures for
+  attach → progress → appears, open image viewer, Open-with chooser intent (intended()), delete.
