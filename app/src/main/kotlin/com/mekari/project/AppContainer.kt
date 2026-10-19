@@ -247,14 +247,17 @@ class AppContainer(private val context: Context) {
      * The background check (InboxCheckWorker): the stored session against the server, its current workspace's
      * unread items, diffed against the ids seen last time. Its 401s are logged as the worker's.
      */
-    internal suspend fun checkInbox(): InboxCheck = runInboxCheck(
-        api = serverSettings.serverUrl?.let { LiveApi(it, tokenStore.forSource("worker")) },
-        hasToken = tokenStore.load() != null,
-        // Per user + workspace: a switch or a different account starts its own baseline (no flood).
-        seen = { user, workspace -> context.dataStore.data.first()[seenKey(user, workspace)] },
-        // Synchronously, before the worker returns: the process may die right after.
-        setSeen = { user, workspace, ids -> context.dataStore.edit { it[seenKey(user, workspace)] = ids } }
-    )
+    internal suspend fun checkInbox(): InboxCheck {
+        val tokens = tokenStore.pinned("worker") // one session for the whole check
+        return runInboxCheck(
+            api = serverSettings.serverUrl?.let { LiveApi(it, tokens) },
+            hasToken = tokens.load() != null,
+            // Per user + workspace: a switch or a different account starts its own baseline (no flood).
+            seen = { user, workspace -> context.dataStore.data.first()[seenKey(user, workspace)] },
+            // Synchronously, before the worker returns: the process may die right after.
+            setSeen = { user, workspace, ids -> context.dataStore.edit { it[seenKey(user, workspace)] = ids } }
+        )
+    }
 
     /**
      * The inbox poller runs only while the app is in the foreground (ProcessLifecycleOwner: rotation isn't a

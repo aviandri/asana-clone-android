@@ -239,9 +239,9 @@ class AppSession(
         val url = ServerUrl.normalize(server) ?: return _state.update { it.copy(signInError = SignInError.BadServer) }
         _state.update { it.copy(isSigningIn = true) }
         val previousUrl = settings.serverUrl
-        // A session kept from an offline launch belongs to the old server: its cookie must never reach this one
-        // (every request carries the stored token, /health and /auth/login included).
-        if (url != previousUrl && tokens.load() != null) tokens.clear()
+        // Any session for the old server goes, stored-only ones included (a blob the Keystore couldn't open yet):
+        // once this URL is stored, a restored session would carry the old server's cookie to it.
+        if (url != previousUrl) tokens.clear()
         try {
             val api = makeApi(url)
             try {

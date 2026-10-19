@@ -5,6 +5,7 @@ import com.mekari.project.core.ApiEvent
 import com.mekari.project.core.DeepLink
 import com.mekari.project.core.InMemoryServerSettings
 import com.mekari.project.core.InMemoryTokenStore
+import com.mekari.project.core.Me
 import com.mekari.project.core.MekariApi
 import com.mekari.project.core.ServerSettings
 import com.mekari.project.core.TokenStore
@@ -126,9 +127,13 @@ class AppSessionTest {
 
         fun client(fake: FakeApi): (String, TokenStore) -> MekariApi = { _, store ->
             object : MekariApi by fake {
-                override suspend fun health() = fake.health().also { log += "health(cookie=${store.load()})" }
-                override suspend fun login(email: String, password: String) =
-                    fake.login(email, password).also { store.save("new-token") }
+                override suspend fun health() = fake.health().also { log += "health" }
+
+                // What a stored session would ride along with (LiveApi itself never sends one on login).
+                override suspend fun login(email: String, password: String): Me {
+                    log += "login(stored=${store.load()})"
+                    return fake.login(email, password).also { store.save("new-token") }
+                }
             }
         }
     }
@@ -150,7 +155,7 @@ class AppSessionTest {
         session.signIn("new.example.com", "alice@example.com", DemoIds.PASSWORD)
         assertTrue(session.state.value.auth is Auth.SignedIn)
         assertEquals(
-            listOf("clear", "health(cookie=null)", "url=https://new.example.com", "save"),
+            listOf("clear", "health", "url=https://new.example.com", "login(stored=null)", "save"),
             switching.log
         )
 
@@ -168,7 +173,7 @@ class AppSessionTest {
         assertEquals(SignInError.WrongCredentials, failingSession.state.value.signInError)
         assertEquals(old, failing.settings.serverUrl)
         assertEquals(
-            listOf("clear", "health(cookie=null)", "url=https://new.example.com", "url=$old"),
+            listOf("clear", "health", "url=https://new.example.com", "login(stored=null)", "url=$old"),
             failing.log
         )
 
@@ -184,7 +189,21 @@ class AppSessionTest {
                 TestTime.clock
             )
         sameSession.signIn(old, "alice@example.com", DemoIds.PASSWORD)
-        assertEquals(listOf("health(cookie=old-token)", "url=$old", "save"), same.log)
+        assertEquals(listOf("health", "url=$old", "login(stored=old-token)", "save"), same.log)
+
+        // A session only on disk (the Keystore couldn't open it yet) is cleared too: once the new URL is stored,
+        // restoring it would send the old server's cookie there.
+        val diskOnly = Recorder(old, null)
+        val diskOnlySession = AppSession(
+            diskOnly.settings,
+            diskOnly.tokens,
+            diskOnly.client(demoFake(email = null)),
+            InMemoryFeaturePrefs(),
+            backgroundScope,
+            TestTime.clock
+        )
+        diskOnlySession.signIn("new.example.com", "alice@example.com", DemoIds.PASSWORD)
+        assertEquals("clear", diskOnly.log.first())
     }
 
     @Test

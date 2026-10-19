@@ -64,6 +64,22 @@ class PersistentTokenStore(
         if (token == null) persist(null)
     }
 
+    /**
+     * The token as it is NOW, for one short-lived client (the background check): it reads the stored token
+     * only while that's still this one, so a sign-out or a new sign-in midway never mixes sessions.
+     */
+    fun pinned(source: String): TokenStore {
+        val pin = load()
+        return object : TokenStore {
+            override fun load() = this@PersistentTokenStore.load()?.takeIf { it == pin }
+            override fun save(token: String) = Unit
+            override fun clear() {
+                pin?.let { this@PersistentTokenStore.clearIf(it, source) }
+            }
+            override fun clearIf(expected: String) = this@PersistentTokenStore.clearIf(expected, source)
+        }
+    }
+
     /** This store as one client sees it: its 401s are logged under [source] ("app", "worker"). */
     fun forSource(source: String): TokenStore = object : TokenStore {
         override fun load() = this@PersistentTokenStore.load()

@@ -165,4 +165,17 @@ class PersistentTokenStoreTest {
         store.dropStoredIfSignedOut()
         assertEquals(listOf(null, "fresh"), persisted)
     }
+
+    @Test
+    fun aPinnedViewOnlyEverSeesTheSessionItStartedWith() {
+        val store = PersistentTokenStore("A") { }
+        val worker = store.pinned("worker")
+        assertEquals("A", worker.load())
+        store.save("B") // a new sign-in while the check runs
+        assertNull("never B's cookie", worker.load())
+        assertFalse(worker.clearIf("A"))
+        assertEquals("B", store.load())
+        worker.clear()
+        assertEquals("a pinned clear only clears its own session", "B", store.load())
+    }
 }
