@@ -49,6 +49,16 @@ class PersistentTokenStore(
         true
     }
 
+    /**
+     * The token a delayed restore opened (AppContainer.retryKeptSession): taken only if there's still no
+     * session, and not persisted, since storage already holds it. False if a sign-in got there first.
+     */
+    fun adopt(restored: String): Boolean = synchronized(lock) {
+        if (token != null) return false
+        token = restored
+        true
+    }
+
     /** This store as one client sees it: its 401s are logged under [source] ("app", "worker"). */
     fun forSource(source: String): TokenStore = object : TokenStore {
         override fun load() = this@PersistentTokenStore.load()
@@ -82,9 +92,12 @@ internal class Restored(val token: String?, val reason: String, val dropBlob: Bo
 internal fun restoreSession(
     sealed: String?,
     open: (String) -> Opened,
+    mustClear: Boolean = false,
     attempts: Int = 3,
     pause: () -> Unit = { Thread.sleep(100) }
 ): Restored {
+    // A token write that failed twice (a sign-out among them, maybe): whatever storage holds is stale.
+    if (mustClear) return Restored(null, "cleared(an earlier session write failed)", dropBlob = true)
     sealed ?: return Restored(null, "absent", dropBlob = false)
     var opened = open(sealed)
     var tries = 1

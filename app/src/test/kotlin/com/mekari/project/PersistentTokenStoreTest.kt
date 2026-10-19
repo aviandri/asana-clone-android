@@ -131,4 +131,27 @@ class PersistentTokenStoreTest {
     fun anOpenedTokenNeverPrints() {
         assertFalse("secret" in Opened.Token("secret").toString())
     }
+
+    @Test
+    fun anEarlierFailedWriteDropsWhateverIsStored() {
+        val restored = restoreSession("blob", { Opened.Token("signed-out token") }, mustClear = true, pause = {})
+        assertNull("a sign-out that didn't reach disk isn't undone", restored.token)
+        assertTrue(restored.dropBlob)
+        assertEquals("cleared(an earlier session write failed)", restored.reason)
+        assertTrue(restoreSession(null, { error("not opened") }, mustClear = true).dropBlob)
+    }
+
+    @Test
+    fun aDelayedRestoreNeverOverwritesASignInAndIsNotPersisted() {
+        val persisted = mutableListOf<String?>()
+        val store = PersistentTokenStore(null) { persisted += it }
+        assertTrue(store.adopt("kept"))
+        assertEquals("kept", store.load())
+        assertFalse("already has one", store.adopt("other"))
+        store.clear()
+        store.save("fresh")
+        assertFalse(store.adopt("kept"))
+        assertEquals("fresh", store.load())
+        assertEquals(listOf(null, "fresh"), persisted)
+    }
 }

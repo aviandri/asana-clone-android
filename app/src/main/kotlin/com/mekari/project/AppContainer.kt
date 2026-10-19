@@ -2,10 +2,12 @@ package com.mekari.project
 
 import android.app.Application
 import android.content.Context
+import android.os.Looper
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
 import android.util.Log
+import androidx.annotation.VisibleForTesting
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.MutablePreferences
 import androidx.datastore.preferences.core.Preferences
@@ -28,6 +30,8 @@ import com.mekari.project.feature.FeaturePrefs
 import com.mekari.project.feature.LoadState
 import com.mekari.project.feature.NavigationTarget
 import com.mekari.project.feature.SignInError
+import java.io.File
+import java.io.IOException
 import java.security.KeyStore
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
@@ -37,7 +41,6 @@ import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -153,7 +156,8 @@ class AppContainer(private val context: Context) {
             val api = fake ?: FakeApi(signedInAs = if (signedIn) "alice@example.com" else null)
             AppSession.uiTest(signedIn, appScope, api)
         } else {
-            val tokens = tokenStore.forSource("app")
+            val tokens = tokenStore.forSource("app") // first touch restores (and may keep a blob)
+            retryKeptSession()
             AppSession(serverSettings, tokens, { url, store -> LiveApi(url, store) }, featurePrefs, appScope)
         }
         currentSession = session
@@ -290,14 +294,23 @@ class AppContainer(private val context: Context) {
         }
     }
 
+    /** A stored token the Keystore couldn't open at launch (Unavailable): retried once by [retryKeptSession]. */
+    private var keptBlob: String? = null
+
     private val tokenStore: PersistentTokenStore by lazy {
-        val restored = restoreSession(stored[Keys.TOKEN], SessionCipher::open)
+        val sealed = stored[Keys.TOKEN]
+        // Off main (a worker's cold start) a Keystore hiccup is retried with short pauses; on main it isn't,
+        // since session() retries a kept blob once anyway (retryKeptSession).
+        val onMain = Looper.myLooper() == Looper.getMainLooper()
+        val restored =
+            restoreSession(sealed, SessionCipher::open, mustClear = mustClear.exists(), attempts = if (onMain) 1 else 3)
         if (restored.token != null) {
             SessionLog.session("session restored at launch")
         } else {
             SessionLog.session("no session at launch: ${restored.reason}")
         }
         if (restored.dropBlob) writeToken(null)
+        if (restored.token == null && !restored.dropBlob) keptBlob = sealed
         PersistentTokenStore(restored.token, SessionLog::session) { token ->
             // A Keystore failure keeps the token for this run only (in memory), rather than failing sign-in.
             writeToken(token?.let { SessionCipher.encrypt(it) })
@@ -305,35 +318,70 @@ class AppContainer(private val context: Context) {
     }
 
     /**
-     * The token's own write, done synchronously (not through [write]'s queue): sign-in completes only once
-     * the token is on disk, so a process killed right after can't come back signed out (QA A5). Runs under
-     * the token store's lock, so token writes stay in call order. One small file; DataStore's I/O is off main.
+     * A blob kept after a Keystore hiccup gets one more try when the UI starts the session, so a WorkManager
+     * cold start that hit the hiccup doesn't leave the foreground signed out for the whole process (#11 review 3).
      */
-    private fun writeToken(sealed: String?) {
-        try {
-            runBlocking {
-                context.dataStore.edit { if (sealed != null) it[Keys.TOKEN] = sealed else it.remove(Keys.TOKEN) }
-            }
-        } catch (e: java.io.IOException) {
-            Log.w(SessionLog.TAG, "Couldn't write the session token: ${e.javaClass.simpleName}")
+    private fun retryKeptSession() {
+        val sealed = keptBlob ?: return
+        keptBlob = null
+        if (tokenStore.load() != null) return
+        val retried = restoreSession(sealed, SessionCipher::open, attempts = 1)
+        val token = retried.token
+        when {
+            token != null && tokenStore.adopt(token) -> SessionLog.session("session restored on retry")
+            token != null -> Unit // signed in meanwhile
+            else -> SessionLog.session("no session on retry: ${retried.reason}")
         }
-    }
-
-    /** Every DataStore change, in the order asked for, applied by one coroutine (see [write]). */
-    private val writes = Channel<(MutablePreferences) -> Unit>(Channel.UNLIMITED).also { queue ->
-        appScope.launch { for (change in queue) context.dataStore.edit { change(it) } }
+        if (retried.dropBlob) writeToken(null)
     }
 
     /**
-     * Enqueues a change; changes reach DataStore strictly in call order, from any thread (the token's
-     * clearIf runs on OkHttp's thread, a sign-in's save on main). DataStore does its own I/O off main.
+     * Set when a token write failed even after a retry: storage may still hold a token this process replaced
+     * or cleared (a sign-out!), so the next launch must not restore it. A plain file, not DataStore, since
+     * DataStore is what just failed. Removed by the next successful token write (#11 review 4).
      */
-    private fun write(change: (MutablePreferences) -> Unit) {
-        writes.trySend(change)
+    private val mustClear: File get() = File(context.noBackupFilesDir, "session-must-clear")
+
+    /**
+     * The token's own write, synchronous (not through the queue): sign-in completes only once the token is on
+     * disk, so a process killed right after can't come back signed out (QA A5). Runs under the token store's
+     * lock, so token writes stay in call order. Safe on main because the queue's consumer never needs main
+     * (see PreferenceWrites).
+     */
+    private fun writeToken(sealed: String?) {
+        val change: (MutablePreferences) -> Unit = { prefs ->
+            if (sealed == null) prefs.remove(Keys.TOKEN) else prefs[Keys.TOKEN] = sealed
+        }
+        repeat(2) {
+            try {
+                writes.writeNow(change)
+                mustClear.delete()
+                return
+            } catch (e: IOException) {
+                Log.w(SessionLog.TAG, "Couldn't write the session token: ${e.javaClass.simpleName}")
+            }
+        }
+        try {
+            mustClear.createNewFile()
+            SessionLog.session("session write failed twice: the stored session is dropped at the next launch")
+        } catch (e: IOException) {
+            Log.w(SessionLog.TAG, "Couldn't mark the session for clearing: ${e.javaClass.simpleName}")
+        }
     }
+
+    /** Every DataStore change, in call order, from any thread; consumed off main (see PreferenceWrites). */
+    private val writes = PreferenceWrites(context.dataStore, CoroutineScope(SupervisorJob() + Dispatchers.IO)) { e ->
+        Log.w(TAG, "Couldn't save a setting: ${e.javaClass.simpleName}")
+    }
+
+    private fun write(change: (MutablePreferences) -> Unit) = writes.enqueue(change)
 
     private fun seenKey(userId: String, workspaceId: String) =
         stringSetPreferencesKey("seenUnread.$userId.$workspaceId")
+
+    private companion object {
+        const val TAG = "AppContainer"
+    }
 
     private object Keys {
         val SERVER = stringPreferencesKey("serverUrl")
@@ -355,6 +403,7 @@ internal object SessionCipher {
     private const val TAG = "SessionCipher"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
     private const val IV_BYTES = 12
+    private const val TAG_BYTES = 16
 
     /**
      * Null if the Keystore fails (logged by type only; never the token). A key that can't seal is replaced
@@ -388,7 +437,7 @@ internal object SessionCipher {
         } catch (_: IllegalArgumentException) {
             return Opened.Lost("corrupt")
         }
-        if (bytes.size <= IV_BYTES) return Opened.Lost("corrupt")
+        if (bytes.size < IV_BYTES + TAG_BYTES) return Opened.Lost("corrupt")
         return try {
             val key = existingKey() ?: return Opened.Lost("key-missing")
             val cipher = Cipher.getInstance(TRANSFORMATION)
@@ -401,7 +450,8 @@ internal object SessionCipher {
         }
     }
 
-    private fun deleteKey() {
+    @VisibleForTesting
+    internal fun deleteKey() {
         KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS)
     }
 
