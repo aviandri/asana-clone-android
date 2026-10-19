@@ -50,6 +50,7 @@ import com.mekari.project.ui.components.CompletionTitle
 import com.mekari.project.ui.components.InlineAddField
 import com.mekari.project.ui.components.parseHexColor
 import com.mekari.project.ui.components.rememberAddFieldState
+import com.mekari.project.ui.components.taskRowAnimation
 import com.mekari.project.ui.launchAction
 import com.mekari.project.ui.runAction
 import java.time.LocalDate
@@ -131,7 +132,7 @@ fun MyTasksScreen(
                         onToggle = { appScope.launchAction { scope.myTasks.toggleComplete(id) } },
                         onOpen = { onOpenTask(id) },
                         // Only the rows animate (insert, the collapse after the linger), never the add field.
-                        modifier = Modifier.animateItem()
+                        modifier = taskRowAnimation()
                     )
                 }
             }

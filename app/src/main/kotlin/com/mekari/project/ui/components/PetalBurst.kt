@@ -10,6 +10,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -35,19 +36,36 @@ private const val DURATION_MS = 1200
  * The occasional celebration: 14 petals burst from [CelebrationOrigin.last] (or the upper middle) when
  * [eventId] changes. It's a full-screen overlay with no pointer input, so taps go straight through to
  * the app below. Nothing is drawn with animations off.
+ *
+ * Pass the event's id as it is (CompletionFeedback.lastEvent): this composable remembers which one it
+ * played, so a rotation or coming back doesn't replay it. The effect's key must stay put while the burst
+ * runs. Nulling it right after starting (the old "already shown" dedupe outside) cancelled the animation
+ * at progress 0 and froze all 14 petals at the checkbox: the stray dot of QA A2. And only a running burst
+ * draws, so a cancelled one can't freeze on screen again.
  */
 @Composable
 fun PetalBurst(eventId: Int?, modifier: Modifier = Modifier) {
     val enabled = animationsEnabled(LocalContext.current)
+    // Saved, and seeded with the event already there, so only events after this appears celebrate.
+    var played by rememberSaveable { mutableStateOf(eventId) }
     val progress = remember { Animatable(1f) }
     var origin by remember { mutableStateOf<Offset?>(null) }
+    var running by remember { mutableStateOf<Int?>(null) }
     LaunchedEffect(eventId) {
-        if (eventId == null || !enabled) return@LaunchedEffect
+        if (eventId == null || eventId == played) return@LaunchedEffect
+        played = eventId
+        if (!enabled) return@LaunchedEffect
         origin = CelebrationOrigin.last
-        progress.snapTo(0f)
-        progress.animateTo(1f, tween(DURATION_MS, easing = LinearEasing))
+        running = eventId
+        try {
+            progress.snapTo(0f)
+            progress.animateTo(1f, tween(DURATION_MS, easing = LinearEasing))
+        } finally {
+            // A newer burst may have taken over meanwhile; only clear our own.
+            if (running == eventId) running = null
+        }
     }
-    if (progress.value >= 1f) return
+    if (running == null || progress.value >= 1f) return
     Canvas(modifier.fillMaxSize().testTag("celebration.burst")) {
         val t = progress.value
         val eased = 1f - (1f - t).pow(3)

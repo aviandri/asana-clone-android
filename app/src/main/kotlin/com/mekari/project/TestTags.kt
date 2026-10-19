@@ -59,6 +59,7 @@ object TestTags {
     const val SIGN_OUT = "settings.signOut"
     const val NOTIFICATIONS_BLOCKED = "settings.notificationsBlocked"
     const val WORKSPACE_SHEET = "sheet.workspaces"
+    const val WORKSPACE_LIST = "sheet.workspaces.list"
     fun workspaceOption(id: String) = "workspace.option.$id"
     fun subtaskRow(id: String) = "subtask.row.$id"
     fun mentionOption(id: String) = "mention.option.$id"

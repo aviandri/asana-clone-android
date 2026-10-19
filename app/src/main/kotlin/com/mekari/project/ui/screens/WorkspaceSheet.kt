@@ -3,7 +3,10 @@ package com.mekari.project.ui.screens
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -16,6 +19,7 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -40,13 +44,23 @@ import com.mekari.project.ui.launchAction
 fun WorkspaceSheet(session: AppSession, onDismiss: () -> Unit) {
     val state by session.state.collectAsStateWithLifecycle()
     val appScope = LocalAppScope.current
-    ModalBottomSheet(onDismissRequest = onDismiss, modifier = Modifier.testTag(TestTags.WORKSPACE_SHEET)) {
+    // Fully open, never half: a half sheet showed only the first row, over the gesture bar (QA A1). The sheet
+    // draws to the bottom edge; the list pads for the navigation bar so its last row scrolls clear of it.
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        contentWindowInsets = { WindowInsets(0) },
+        modifier = Modifier.testTag(TestTags.WORKSPACE_SHEET)
+    ) {
         Text(
             "Workspaces",
             style = MaterialTheme.typography.titleMedium,
             modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp)
         )
-        LazyColumn(Modifier.navigationBarsPadding()) {
+        LazyColumn(
+            Modifier.fillMaxWidth().testTag(TestTags.WORKSPACE_LIST),
+            contentPadding = WindowInsets.navigationBars.asPaddingValues()
+        ) {
             items(state.all, key = { it.id }) { workspace ->
                 val current = workspace.id == state.current?.id
                 ListItem(
