@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
@@ -50,6 +49,7 @@ import com.mekari.project.ui.components.CompletionCheckbox
 import com.mekari.project.ui.components.CompletionTitle
 import com.mekari.project.ui.components.InlineAddField
 import com.mekari.project.ui.components.parseHexColor
+import com.mekari.project.ui.components.rememberAddFieldState
 import com.mekari.project.ui.launchAction
 import com.mekari.project.ui.runAction
 import java.time.LocalDate
@@ -69,7 +69,7 @@ fun MyTasksScreen(
     val projects by scope.projects.state.collectAsStateWithLifecycle()
     val appScope = LocalAppScope.current
     // The add field's text lives here, outside the lazy items, so list updates can't recreate or reset it.
-    val addField = rememberTextFieldState()
+    val addField = rememberAddFieldState()
     var refreshing by remember { mutableStateOf(false) }
     val today = LocalDate.now()
 
