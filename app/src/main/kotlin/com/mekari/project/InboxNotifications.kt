@@ -21,9 +21,12 @@ import androidx.work.NetworkType
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
+import com.mekari.project.core.ApiError
+import com.mekari.project.core.MekariApi
 import com.mekari.project.feature.LocalNotice
 import com.mekari.project.feature.NotificationDiff
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -55,6 +58,10 @@ object InboxNotifications {
     fun canPost(context: Context): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
         ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
         PackageManager.PERMISSION_GRANTED
+
+    /** The permission, or notifications turned off for the app in system settings: either way nothing shows. */
+    fun blocked(context: Context): Boolean =
+        !canPost(context) || !NotificationManagerCompat.from(context).areNotificationsEnabled()
 
     /** One notification per new item; a tap opens its task (mekariproject://task/<id>) via MainActivity. */
     fun post(context: Context, notices: List<LocalNotice>) {
@@ -93,14 +100,62 @@ object InboxNotifications {
 class InboxCheckWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
     override suspend fun doWork(): Result {
         val container = applicationContext.container
-        if (!container.prefs.value.notificationsEnabled) return Result.success()
+        if (!container.prefs.value.notificationsEnabled) {
+            SessionLog.inbox("inbox check: skipped (notifications off in settings)")
+            return Result.success()
+        }
         val foreground = withContext(Dispatchers.Main) {
             ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
         }
-        if (foreground) return Result.success()
-        val notices = container.checkInbox() ?: return Result.success()
-        InboxNotifications.post(applicationContext, notices)
+        if (foreground) {
+            SessionLog.inbox("inbox check: skipped (app in foreground)")
+            return Result.success()
+        }
+        val started = System.currentTimeMillis()
+        val check = container.checkInbox()
+        val blocked = check.notices.isNotEmpty() && InboxNotifications.blocked(applicationContext)
+        if (check.notices.isNotEmpty() && !blocked) InboxNotifications.post(applicationContext, check.notices)
+        SessionLog.inbox("inbox check: ${check.describe(blocked)} in ${System.currentTimeMillis() - started} ms")
         return Result.success()
+    }
+}
+
+/**
+ * One background check's outcome, for the log (QA A6): no-server, no-token, no-current-workspace,
+ * http-<status>, exception-<kind>, baseline-only, or <n>-new with the [notices] to post.
+ */
+internal class InboxCheck(val outcome: String, val notices: List<LocalNotice> = emptyList()) {
+    fun describe(blocked: Boolean): String = when {
+        notices.isEmpty() -> outcome
+        blocked -> "$outcome/notifications-blocked"
+        else -> "$outcome/posted"
+    }
+}
+
+/** The check itself, apart from Android for tests: [api] is null without a server. */
+internal suspend fun runInboxCheck(
+    api: MekariApi?,
+    hasToken: Boolean,
+    seen: suspend (userId: String, workspaceId: String) -> Set<String>?,
+    setSeen: suspend (userId: String, workspaceId: String, ids: Set<String>) -> Unit
+): InboxCheck {
+    api ?: return InboxCheck("no-server")
+    if (!hasToken) return InboxCheck("no-token")
+    return try {
+        val me = api.me()
+        val workspace = me.currentWorkspace ?: return InboxCheck("no-current-workspace")
+        api.setWorkspace(workspace.id)
+        val page = api.notifications(unreadOnly = true)
+        val previous = seen(me.user.id, workspace.id)
+        val (notices, ids) = diffInbox(previous, page)
+        setSeen(me.user.id, workspace.id, ids)
+        if (previous == null) InboxCheck("baseline-only") else InboxCheck("${notices.size}-new", notices)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: ApiError) {
+        InboxCheck(e.status?.let { "http-$it" } ?: "exception-${e.code.raw.lowercase()}")
+    } catch (e: Exception) {
+        InboxCheck("exception-${e.javaClass.simpleName}")
     }
 }
 
