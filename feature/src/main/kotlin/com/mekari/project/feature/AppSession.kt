@@ -238,6 +238,10 @@ class AppSession(
         _state.update { it.copy(signInError = null) }
         val url = ServerUrl.normalize(server) ?: return _state.update { it.copy(signInError = SignInError.BadServer) }
         _state.update { it.copy(isSigningIn = true) }
+        val previousUrl = settings.serverUrl
+        // A session kept from an offline launch belongs to the old server: its cookie must never reach this one
+        // (every request carries the stored token, /health and /auth/login included).
+        if (url != previousUrl && tokens.load() != null) tokens.clear()
         try {
             val api = makeApi(url)
             try {
@@ -250,13 +254,18 @@ class AppSession(
                 return
             }
             try {
-                val me = api.login(email.trim(), password)
+                // The URL is stored BEFORE the token: whatever token storage ends up holding, it's for the stored
+                // server, even if the process dies right after the login (a token next to the old server's URL
+                // would go to the old host on the next launch). A failed sign-in puts the old URL back.
                 settings.serverUrl = url
+                val me = api.login(email.trim(), password)
                 serverWorkspaceId = me.currentWorkspace?.id
                 adopt(me, api)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // Only while no session was stored for the new URL (a failure after login keeps the pair).
+                if (tokens.load() == null) settings.serverUrl = previousUrl
                 val error = e.asApiError()
                 val signInError = when (error.code) {
                     ApiError.Code.UNAUTHORIZED -> SignInError.WrongCredentials

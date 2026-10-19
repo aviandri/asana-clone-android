@@ -29,7 +29,7 @@ class PersistentTokenStore(
 
     /** Only a sign-out clears unconditionally (LiveApi.logout). */
     override fun clear() = synchronized(lock) {
-        if (token != null) log("session cleared: user-sign-out")
+        if (token != null) log("session cleared: user-sign-out or sign-in to another server")
         token = null
         persist(null)
     }
@@ -57,6 +57,11 @@ class PersistentTokenStore(
         if (token != null) return false
         token = restored
         true
+    }
+
+    /** Removes the stored token, unless a sign-in stored a new one meanwhile (a delayed restore found it unreadable). */
+    fun dropStoredIfSignedOut() = synchronized(lock) {
+        if (token == null) persist(null)
     }
 
     /** This store as one client sees it: its 401s are logged under [source] ("app", "worker"). */

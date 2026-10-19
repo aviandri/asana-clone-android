@@ -34,7 +34,10 @@ class InMemoryTokenStore(token: String? = null) : TokenStore {
     }
 }
 
-/** The one server this install talks to (SPEC-ANDROID §3). The app: DataStore, read once at start. */
+/**
+ * The one server this install talks to (SPEC-ANDROID §3). The app: DataStore, read once at start. Setting it
+ * must persist before returning: sign-in stores the URL, then the token, and relies on that order.
+ */
 interface ServerSettings {
     var serverUrl: String?
 }
