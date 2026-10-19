@@ -239,9 +239,6 @@ class AppSession(
         val url = ServerUrl.normalize(server) ?: return _state.update { it.copy(signInError = SignInError.BadServer) }
         _state.update { it.copy(isSigningIn = true) }
         val previousUrl = settings.serverUrl
-        // Any session for the old server goes, stored-only ones included (a blob the Keystore couldn't open yet):
-        // once this URL is stored, a restored session would carry the old server's cookie to it.
-        if (url != previousUrl) tokens.clear()
         try {
             val api = makeApi(url)
             try {
@@ -257,6 +254,11 @@ class AppSession(
                 // The URL is stored BEFORE the token: whatever token storage ends up holding, it's for the stored
                 // server, even if the process dies right after the login (a token next to the old server's URL
                 // would go to the old host on the next launch). A failed sign-in puts the old URL back.
+                // Any session for the old server goes (stored-only ones too: a blob the Keystore couldn't open yet),
+                // but only now, once the new server answered: a mistyped address must not cost a valid session.
+                // Cleared before the URL is stored, so storage never pairs the old token with the new URL. (No
+                // request carries it meanwhile: /health and /auth/login never send a cookie.)
+                if (url != previousUrl) tokens.clear()
                 settings.serverUrl = url
                 val me = api.login(email.trim(), password)
                 serverWorkspaceId = me.currentWorkspace?.id

@@ -155,7 +155,7 @@ class AppSessionTest {
         session.signIn("new.example.com", "alice@example.com", DemoIds.PASSWORD)
         assertTrue(session.state.value.auth is Auth.SignedIn)
         assertEquals(
-            listOf("clear", "health", "url=https://new.example.com", "login(stored=null)", "save"),
+            listOf("health", "clear", "url=https://new.example.com", "login(stored=null)", "save"),
             switching.log
         )
 
@@ -173,7 +173,7 @@ class AppSessionTest {
         assertEquals(SignInError.WrongCredentials, failingSession.state.value.signInError)
         assertEquals(old, failing.settings.serverUrl)
         assertEquals(
-            listOf("clear", "health", "url=https://new.example.com", "login(stored=null)", "url=$old"),
+            listOf("health", "clear", "url=https://new.example.com", "login(stored=null)", "url=$old"),
             failing.log
         )
 
@@ -203,7 +203,25 @@ class AppSessionTest {
             TestTime.clock
         )
         diskOnlySession.signIn("new.example.com", "alice@example.com", DemoIds.PASSWORD)
-        assertEquals("clear", diskOnly.log.first())
+        assertEquals(listOf("health", "clear", "url=https://new.example.com"), diskOnly.log.take(3))
+
+        // A mistyped address (no server answers) costs nothing: the kept session and its URL stay.
+        val typo = Recorder(old, "old-token")
+        val typoFake = demoFake(email = null)
+        val typoSession = AppSession(
+            typo.settings,
+            typo.tokens,
+            typo.client(typoFake),
+            InMemoryFeaturePrefs(),
+            backgroundScope,
+            TestTime.clock
+        )
+        typoFake.failNext(FakeEndpoint.HEALTH, ApiError.transport())
+        typoSession.signIn("old.example.co", "alice@example.com", DemoIds.PASSWORD)
+        assertEquals(SignInError.Transport, typoSession.state.value.signInError)
+        assertEquals("old-token", typo.tokens.load())
+        assertEquals(old, typo.settings.serverUrl)
+        assertEquals(emptyList<String>(), typo.log)
     }
 
     @Test
