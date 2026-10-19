@@ -20,16 +20,16 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.mekari.project.core.DeepLink
 import com.mekari.project.core.LiveApi
 import com.mekari.project.core.ServerSettings
-import com.mekari.project.core.TokenStore
 import com.mekari.project.core.fake.FakeApi
 import com.mekari.project.feature.AppSession
 import com.mekari.project.feature.Auth
 import com.mekari.project.feature.DeepLinkResult
 import com.mekari.project.feature.FeaturePrefs
 import com.mekari.project.feature.LoadState
-import com.mekari.project.feature.LocalNotice
 import com.mekari.project.feature.NavigationTarget
+import com.mekari.project.feature.SignInError
 import java.security.KeyStore
+import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -153,7 +153,8 @@ class AppContainer(private val context: Context) {
             val api = fake ?: FakeApi(signedInAs = if (signedIn) "alice@example.com" else null)
             AppSession.uiTest(signedIn, appScope, api)
         } else {
-            AppSession(serverSettings, tokenStore, { url, tokens -> LiveApi(url, tokens) }, featurePrefs, appScope)
+            val tokens = tokenStore.forSource("app")
+            AppSession(serverSettings, tokens, { url, store -> LiveApi(url, store) }, featurePrefs, appScope)
         }
         currentSession = session
         liveSession = !fakeApi
@@ -161,6 +162,7 @@ class AppContainer(private val context: Context) {
         followForeground(session)
         followLinks(session)
         followInboxBaseline(session)
+        if (!fakeApi) followKeptSession(session)
         // Background inbox checks: live sessions only (the fake API never schedules WorkManager). Decided from
         // auth: Restoring (every cold start) changes nothing, so the periodic job isn't reset or dropped.
         if (!fakeApi) {
@@ -209,6 +211,24 @@ class AppContainer(private val context: Context) {
         }
     }
 
+    /**
+     * The Sign in screen with a token still stored: the launch's `/auth/me` failed without a 401 (offline, a
+     * frozen app's network not back yet), so the token is kept for the next launch. Logged (QA A5) because
+     * on screen it looks just like a lost session.
+     */
+    private fun followKeptSession(session: AppSession) {
+        appScope.launch {
+            session.state.map { (it.auth is Auth.SignedOut) to it.signInError }
+                .distinctUntilChanged()
+                .collect { (signedOut, error) ->
+                    if (signedOut && tokenStore.load() != null) {
+                        val why = if (error == SignInError.Transport) "transport" else "error"
+                        SessionLog.session("sign-in shown with a stored session: launch check failed ($why); kept")
+                    }
+                }
+        }
+    }
+
     private var liveSession = false
 
     private fun updateBackgroundCheck(signedIn: Boolean) {
@@ -221,30 +241,16 @@ class AppContainer(private val context: Context) {
 
     /**
      * The background check (InboxCheckWorker): the stored session against the server, its current workspace's
-     * unread items, diffed against the ids seen last time. Null when there's no session or the call fails.
+     * unread items, diffed against the ids seen last time. Its 401s are logged as the worker's.
      */
-    suspend fun checkInbox(): List<LocalNotice>? {
-        val server = serverSettings.serverUrl ?: return null
-        if (tokenStore.load() == null) return null
-        return try {
-            val api = LiveApi(server, tokenStore)
-            val me = api.me()
-            val workspace = me.currentWorkspace ?: return null
-            api.setWorkspace(workspace.id)
-            val page = api.notifications(unreadOnly = true)
-            // Per user + workspace: a switch or a different account starts its own baseline (no flood).
-            val key = seenKey(me.user.id, workspace.id)
-            val previous = context.dataStore.data.first()[key]
-            val (notices, seen) = diffInbox(previous, page)
-            // Synchronously, before the worker returns: the process may die right after.
-            context.dataStore.edit { it[key] = seen }
-            notices
-        } catch (e: kotlinx.coroutines.CancellationException) {
-            throw e
-        } catch (_: Exception) {
-            null
-        }
-    }
+    internal suspend fun checkInbox(): InboxCheck = runInboxCheck(
+        api = serverSettings.serverUrl?.let { LiveApi(it, tokenStore.forSource("worker")) },
+        hasToken = tokenStore.load() != null,
+        // Per user + workspace: a switch or a different account starts its own baseline (no flood).
+        seen = { user, workspace -> context.dataStore.data.first()[seenKey(user, workspace)] },
+        // Synchronously, before the worker returns: the process may die right after.
+        setSeen = { user, workspace, ids -> context.dataStore.edit { it[seenKey(user, workspace)] = ids } }
+    )
 
     /**
      * The inbox poller runs only while the app is in the foreground (ProcessLifecycleOwner: rotation isn't a
@@ -284,19 +290,32 @@ class AppContainer(private val context: Context) {
         }
     }
 
-    private val tokenStore: TokenStore by lazy {
-        val initial = stored[Keys.TOKEN]?.let { sealed ->
-            SessionCipher.decrypt(sealed) ?: run {
-                // Unreadable (key lost after a restore, or corrupt): start signed out, and drop both.
-                SessionCipher.deleteKey()
-                write { it.remove(Keys.TOKEN) }
-                null
-            }
+    private val tokenStore: PersistentTokenStore by lazy {
+        val restored = restoreSession(stored[Keys.TOKEN], SessionCipher::open)
+        if (restored.token != null) {
+            SessionLog.session("session restored at launch")
+        } else {
+            SessionLog.session("no session at launch: ${restored.reason}")
         }
-        PersistentTokenStore(initial) { token ->
+        if (restored.dropBlob) writeToken(null)
+        PersistentTokenStore(restored.token, SessionLog::session) { token ->
             // A Keystore failure keeps the token for this run only (in memory), rather than failing sign-in.
-            val sealed = token?.let { SessionCipher.encrypt(it) }
-            write { if (sealed != null) it[Keys.TOKEN] = sealed else it.remove(Keys.TOKEN) }
+            writeToken(token?.let { SessionCipher.encrypt(it) })
+        }
+    }
+
+    /**
+     * The token's own write, done synchronously (not through [write]'s queue): sign-in completes only once
+     * the token is on disk, so a process killed right after can't come back signed out (QA A5). Runs under
+     * the token store's lock, so token writes stay in call order. One small file; DataStore's I/O is off main.
+     */
+    private fun writeToken(sealed: String?) {
+        try {
+            runBlocking {
+                context.dataStore.edit { if (sealed != null) it[Keys.TOKEN] = sealed else it.remove(Keys.TOKEN) }
+            }
+        } catch (e: java.io.IOException) {
+            Log.w(SessionLog.TAG, "Couldn't write the session token: ${e.javaClass.simpleName}")
         }
     }
 
@@ -328,46 +347,69 @@ class AppContainer(private val context: Context) {
 
 /**
  * The session token, sealed with an AES-GCM key that never leaves the Android Keystore
- * (SPEC-ANDROID §3). A token that can't be decrypted (key lost, e.g. after a restore) reads as signed out.
+ * (SPEC-ANDROID §3). A token that can't be decrypted (key lost, e.g. after a restore) reads as signed out;
+ * see [restoreSession] for which failures drop it.
  */
 internal object SessionCipher {
     private const val ALIAS = "mekari.session"
     private const val TAG = "SessionCipher"
     private const val TRANSFORMATION = "AES/GCM/NoPadding"
+    private const val IV_BYTES = 12
 
-    /** Null if the Keystore fails (logged by type only; never the token). */
+    /**
+     * Null if the Keystore fails (logged by type only; never the token). A key that can't seal is replaced
+     * once: this is the one safe moment, since the new token is about to replace the old blob anyway.
+     */
     fun encrypt(plain: String): String? = try {
-        val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key()) }
-        val sealed = cipher.iv + cipher.doFinal(plain.toByteArray(Charsets.UTF_8))
-        Base64.encodeToString(sealed, Base64.NO_WRAP)
+        seal(plain)
     } catch (e: Exception) {
-        Log.w(TAG, "Couldn't seal the session token: ${e.javaClass.simpleName}")
-        null
-    }
-
-    /** Null if it can't be opened (wrong key, corrupt blob, Keystore failure). */
-    fun decrypt(stored: String): String? = try {
-        val bytes = Base64.decode(stored, Base64.NO_WRAP)
-        val cipher = Cipher.getInstance(TRANSFORMATION)
-        cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes, 0, 12))
-        String(cipher.doFinal(bytes, 12, bytes.size - 12), Charsets.UTF_8)
-    } catch (e: Exception) {
-        Log.w(TAG, "Couldn't open the session token: ${e.javaClass.simpleName}")
-        null
-    }
-
-    /** Drops the key (after an unreadable token), so the next sign-in starts with a fresh one. */
-    fun deleteKey() {
+        Log.w(TAG, "Couldn't seal the session token: ${e.javaClass.simpleName}; retrying with a new key")
         try {
-            KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS)
+            deleteKey()
+            seal(plain)
         } catch (e: Exception) {
-            Log.w(TAG, "Couldn't delete the session key: ${e.javaClass.simpleName}")
+            Log.w(TAG, "Couldn't seal the session token: ${e.javaClass.simpleName}")
+            null
         }
     }
 
+    private fun seal(plain: String): String {
+        val cipher = Cipher.getInstance(TRANSFORMATION).apply { init(Cipher.ENCRYPT_MODE, key()) }
+        return Base64.encodeToString(cipher.iv + cipher.doFinal(plain.toByteArray(Charsets.UTF_8)), Base64.NO_WRAP)
+    }
+
+    /**
+     * Never creates or deletes the key. Lost: no key, or a blob that fails authentication (AEADBadTag).
+     * Unavailable: any other Keystore failure, which may pass, so the caller keeps the blob.
+     */
+    fun open(stored: String): Opened {
+        val bytes = try {
+            Base64.decode(stored, Base64.NO_WRAP)
+        } catch (_: IllegalArgumentException) {
+            return Opened.Lost("corrupt")
+        }
+        if (bytes.size <= IV_BYTES) return Opened.Lost("corrupt")
+        return try {
+            val key = existingKey() ?: return Opened.Lost("key-missing")
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(128, bytes, 0, IV_BYTES))
+            Opened.Token(String(cipher.doFinal(bytes, IV_BYTES, bytes.size - IV_BYTES), Charsets.UTF_8))
+        } catch (_: AEADBadTagException) {
+            Opened.Lost("corrupt")
+        } catch (e: Exception) {
+            Opened.Unavailable(e.javaClass.simpleName)
+        }
+    }
+
+    private fun deleteKey() {
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.deleteEntry(ALIAS)
+    }
+
+    private fun existingKey(): SecretKey? =
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.getKey(ALIAS, null) as? SecretKey
+
     private fun key(): SecretKey {
-        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-        (store.getKey(ALIAS, null) as? SecretKey)?.let { return it }
+        existingKey()?.let { return it }
         val generator = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
         generator.init(
             KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
