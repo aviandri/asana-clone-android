@@ -124,11 +124,8 @@ fun MekariApp(session: AppSession, container: AppContainer) {
 @Composable
 private fun CompletionOverlays(scope: WorkspaceScope, snackbar: SnackbarHostState) {
     val event by scope.completionFeedback.lastEvent.collectAsStateWithLifecycle()
-    // Don't replay an event that was already shown (rotation, coming back to the app).
-    var shown by rememberSaveable { mutableStateOf(event?.id) }
-    val play = event?.id?.takeIf { it != shown }
-    LaunchedEffect(play) { if (play != null) shown = play }
-    PetalBurst(eventId = play)
+    // PetalBurst itself skips an event it already played (rotation, coming back to the app).
+    PetalBurst(eventId = event?.id)
 
     val view = LocalView.current
     LaunchedEffect(scope) {

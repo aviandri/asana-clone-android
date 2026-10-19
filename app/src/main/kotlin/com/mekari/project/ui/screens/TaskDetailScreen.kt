@@ -103,6 +103,7 @@ import com.mekari.project.ui.components.CompletionMark
 import com.mekari.project.ui.components.CompletionTitle
 import com.mekari.project.ui.components.GuestChip
 import com.mekari.project.ui.components.InlineAddField
+import com.mekari.project.ui.components.LocalCompletionPrefs
 import com.mekari.project.ui.components.parseHexColor
 import com.mekari.project.ui.components.rememberAddFieldState
 import com.mekari.project.ui.components.taskRowAnimation
@@ -246,9 +247,10 @@ fun TaskDetailScreen(
 @Composable
 private fun CompleteButton(task: TaskItem, canEdit: Boolean, onToggle: () -> Unit) {
     val view = androidx.compose.ui.platform.LocalView.current
+    val sound = LocalCompletionPrefs.current.playSound
     FilledTonalButton(
         onClick = {
-            CompletionEffects.play(view, completing = !task.completed, title = task.title, sound = false)
+            CompletionEffects.play(view, completing = !task.completed, title = task.title, sound = sound)
             onToggle()
         },
         enabled = canEdit,

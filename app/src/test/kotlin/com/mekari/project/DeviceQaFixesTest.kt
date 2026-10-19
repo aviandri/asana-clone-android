@@ -2,6 +2,7 @@ package com.mekari.project
 
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.os.Looper
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.getBoundsInRoot
 import androidx.compose.ui.test.hasTestTag
@@ -15,11 +16,14 @@ import com.mekari.project.core.WorkspaceRole
 import com.mekari.project.core.fake.DemoIds
 import com.mekari.project.core.fake.FakeApi
 import com.mekari.project.core.fake.FakeSeed
+import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.Shadows.shadowOf
 import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 
@@ -28,6 +32,10 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 @Config(sdk = [35], qualifiers = "w411dp-h891dp-night-xxhdpi")
 class DeviceQaFixesTest : AppFlowTestBase() {
+    private companion object {
+        const val BURST = "celebration.burst"
+    }
+
     /** A1: the workspace sheet opens fully, and every workspace can be reached. */
     @Test
     fun theWorkspaceSheetOpensFullyAndScrollsToEveryWorkspace() {
@@ -60,23 +68,54 @@ class DeviceQaFixesTest : AppFlowTestBase() {
         compose.onNodeWithTag(last).assertIsDisplayed()
     }
 
-    /** A2: once the last task is completed and gone, the empty My Tasks draws no stray accent speck. */
+    /**
+     * A2: the stray dot was a petal burst frozen at its start, every petal stacked on the tapped checkbox
+     * (its effect key was nulled right after it began, cancelling the animation). Completing the last task
+     * due today celebrates; the burst must start, finish, and leave no accent speck behind.
+     */
     @Test
-    fun completingTheLastTaskLeavesNoAccentSpeck() {
+    fun theCelebrationRunsToTheEndAndLeavesNoSpeck() {
         val seed = FakeSeed.demo()
         val last = seed.tasks.first {
             it.assignee?.id == DemoIds.ALICE && !it.completed && it.projectId == DemoIds.BOARD_PROJECT
-        }
+        }.copy(dueDate = LocalDate.now())
         launch(fake = FakeApi(seed.copy(tasks = seed.tasks.filter { it.assignee?.id != DemoIds.ALICE } + last)))
         waitForTag(TestTags.taskCheckbox(last.id))
         assertTrue("the accent check sees the open task's header", accentPixels().isNotEmpty())
+        // Drive the frame clock by hand: with auto-advance, one idle would run the whole burst unseen.
+        compose.mainClock.autoAdvance = false
         compose.onNodeWithTag(TestTags.taskCheckbox(last.id)).performClick()
-        advance(3_000)
+        var startedAt: Long? = null
+        for (step in 1..200) {
+            stepFrames(10)
+            if (!isGone(BURST)) {
+                startedAt = step * 10L
+                break
+            }
+        }
+        assertTrue("the completion didn't celebrate", startedAt != null)
+        // Midway it's still playing; well after its 1.2 s it's gone (the frozen burst stayed for good).
+        stepFrames(600)
+        assertTrue("the burst ended early", !isGone(BURST))
+        stepFrames(1_400)
+        assertTrue("the burst is still on screen 2 s after it started", isGone(BURST))
+        compose.mainClock.autoAdvance = true
         waitForText("Nothing on your plate")
         advance(1_000)
         assertTrue(isGone(TestTags.taskRow(last.id)))
         val specks = accentPixels()
         assertTrue("accent pixels in the empty list (dp): ${specks.take(10)}", specks.isEmpty())
+    }
+
+    /** Moves the compose clock and the main looper (the app's coroutines) forward together. */
+    private fun stepFrames(ms: Long) {
+        var left = ms
+        while (left > 0) {
+            val step = minOf(16L, left)
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(step))
+            compose.mainClock.advanceTimeBy(step)
+            left -= step
+        }
     }
 
     /** Accent-coloured pixels (dp) in the list area: below the top bar, above the FAB and the nav bar. */

@@ -10,8 +10,17 @@ import androidx.compose.ui.graphics.Color
 
 /** Brand magenta; dynamic colour stays off so the brand colours are used (SPEC-ANDROID §2). */
 val BrandMagenta = Color(0xFFE0257F)
+
+/**
+ * The light theme's primary: the brand a step darker, because primary is also a TEXT colour (section
+ * headers, text buttons, filled-button labels on it) and #E0257F only reaches 3.4–4.4:1 there. This one
+ * clears 4.5:1 on every light surface and container. The brand itself stays for non-text accents.
+ */
+private val BrandMagentaText = Color(0xFFBC1A6B)
 private val BrandMagentaDark = Color(0xFFB0136B)
-private val BrandMagentaLight = Color(0xFFFF5FA2)
+
+// Dark primary: light enough for 4.5:1 text on every dark surface, up to surfaceContainerHighest.
+private val BrandMagentaLight = Color(0xFFFF6AA9)
 
 /**
  * Every role is mapped, not just primary: M3 falls back to its baseline purple for the rest, which put a
@@ -19,7 +28,7 @@ private val BrandMagentaLight = Color(0xFFFF5FA2)
  * tertiary is the petals' purple and the neutrals carry a faint magenta tint.
  */
 internal val LightColors: ColorScheme = lightColorScheme(
-    primary = BrandMagenta,
+    primary = BrandMagentaText,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFFFD9E6),
     onPrimaryContainer = Color(0xFF3E0021),
