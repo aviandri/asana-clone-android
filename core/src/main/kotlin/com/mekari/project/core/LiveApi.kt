@@ -39,17 +39,23 @@ import okhttp3.Response
  * - `X-Workspace-Id` goes on every request except `/auth/…`, `/health` and `/workspaces…`;
  * - a 401 for the token that is still stored clears it and emits [ApiEvent.Unauthorized]; a late 401
  *   for an older token is ignored; login and logout never emit;
- * - a 404 from a scoped collection endpoint while the header was set emits [ApiEvent.WorkspaceLost].
+ * - a 404 from a scoped collection endpoint while the header was set emits [ApiEvent.WorkspaceLost];
+ * - redirects are never followed (OkHttp would carry the hand-set Cookie, and re-post a login, to another
+ *   host): a 3xx is an error;
+ * - `/auth/login` never carries a cookie, and logout sends exactly the session it ends.
  */
 class LiveApi(
     serverUrl: String,
     private val tokens: TokenStore,
-    private val client: OkHttpClient = defaultClient(),
+    client: OkHttpClient = defaultClient(),
     private val json: Json = MekariJson,
     /** Where response bodies are decoded (off the main thread). */
     private val decodeDispatcher: CoroutineDispatcher = Dispatchers.Default
 ) : MekariApi {
     private val server: HttpUrl = serverUrl.toHttpUrl()
+
+    /** Whatever client is passed, it never follows a redirect. */
+    private val client: OkHttpClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
 
     @Volatile private var workspaceId: String? = null
     private val eventChannel = Channel<ApiEvent>(Channel.UNLIMITED)
@@ -79,7 +85,9 @@ class LiveApi(
             body = buildJsonObject {
                 put("email", email)
                 put("password", password)
-            }
+            },
+            // A stored session (another account's, maybe another server's) has no business here.
+            token = { null }
         )
         val token =
             SessionCookie.token(raw.headers) ?: throw ApiError.decoding("no session cookie in the login response")
@@ -89,13 +97,18 @@ class LiveApi(
         return me
     }
 
+    /**
+     * Ends the stored session locally FIRST, then tells the server with that captured token. A sign-in that
+     * lands while this request hangs (up to the timeouts) keeps its new token, and this request never carries
+     * the next session's cookie.
+     */
     override suspend fun logout() {
+        val ending = tokens.load() ?: return
+        tokens.clear()
         try {
-            if (tokens.load() != null) send(Method.POST, "/auth/logout")
+            send(Method.POST, "/auth/logout", token = { ending })
         } catch (_: ApiError) {
-            // Best effort: the token is cleared either way.
-        } finally {
-            tokens.clear()
+            // Best effort: the session is gone here either way.
         }
     }
 
@@ -241,7 +254,9 @@ class LiveApi(
         method: Method,
         path: String,
         query: Map<String, String?> = emptyMap(),
-        body: JsonElement? = null
+        body: JsonElement? = null,
+        /** The session to send: the stored one, read now, unless the caller pins it. */
+        token: () -> String? = tokens::load
     ): Raw {
         val url = server.newBuilder().addPathSegments("api/v1").apply {
             path.split('/').filter { it.isNotEmpty() }.forEach { addPathSegment(it) }
@@ -255,13 +270,20 @@ class LiveApi(
             Method.PATCH -> builder.patch(requestBody ?: EMPTY_BODY)
             Method.DELETE -> if (requestBody != null) builder.delete(requestBody) else builder.delete()
         }
-        val sentToken = tokens.load()
+        val sentToken = token()
         if (sentToken != null) builder.header("Cookie", "${SessionCookie.NAME}=$sentToken")
         val sentWorkspace = if (sendsWorkspaceHeader(path)) workspaceId else null
         if (sentWorkspace != null) builder.header(WORKSPACE_HEADER, sentWorkspace)
 
         val raw = perform(builder.build())
         if (raw.code in 200..299) return raw
+        if (raw.code in 300..399) {
+            throw ApiError(
+                ApiError.Code("REDIRECT"),
+                raw.code,
+                "The server answered with a redirect (HTTP ${raw.code}). Check the server address, including https://."
+            )
+        }
         val error = ApiError.from(raw.code, raw.body)
         if (raw.code == 401) {
             // Only a 401 for the session we still hold ends it: a late answer to a request sent with an

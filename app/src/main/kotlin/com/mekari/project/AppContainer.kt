@@ -247,14 +247,17 @@ class AppContainer(private val context: Context) {
      * The background check (InboxCheckWorker): the stored session against the server, its current workspace's
      * unread items, diffed against the ids seen last time. Its 401s are logged as the worker's.
      */
-    internal suspend fun checkInbox(): InboxCheck = runInboxCheck(
-        api = serverSettings.serverUrl?.let { LiveApi(it, tokenStore.forSource("worker")) },
-        hasToken = tokenStore.load() != null,
-        // Per user + workspace: a switch or a different account starts its own baseline (no flood).
-        seen = { user, workspace -> context.dataStore.data.first()[seenKey(user, workspace)] },
-        // Synchronously, before the worker returns: the process may die right after.
-        setSeen = { user, workspace, ids -> context.dataStore.edit { it[seenKey(user, workspace)] = ids } }
-    )
+    internal suspend fun checkInbox(): InboxCheck {
+        val tokens = tokenStore.pinned("worker") // one session for the whole check
+        return runInboxCheck(
+            api = serverSettings.serverUrl?.let { LiveApi(it, tokens) },
+            hasToken = tokens.load() != null,
+            // Per user + workspace: a switch or a different account starts its own baseline (no flood).
+            seen = { user, workspace -> context.dataStore.data.first()[seenKey(user, workspace)] },
+            // Synchronously, before the worker returns: the process may die right after.
+            setSeen = { user, workspace, ids -> context.dataStore.edit { it[seenKey(user, workspace)] = ids } }
+        )
+    }
 
     /**
      * The inbox poller runs only while the app is in the foreground (ProcessLifecycleOwner: rotation isn't a
@@ -289,7 +292,13 @@ class AppContainer(private val context: Context) {
             override var serverUrl: String? = stored[Keys.SERVER]
                 set(value) {
                     field = value
-                    write { prefs -> if (value == null) prefs.remove(Keys.SERVER) else prefs[Keys.SERVER] = value }
+                    // Synchronous: sign-in stores the URL before the token (ServerSettings). If it can't be
+                    // written, the token stored next could end up beside another server's URL: drop it next launch.
+                    val written = writeDurably { prefs ->
+                        if (value == null) prefs.remove(Keys.SERVER) else prefs[Keys.SERVER] = value
+                    }
+                    urlUnwritten = !written
+                    if (!written) markMustClear("server URL")
                 }
         }
     }
@@ -332,7 +341,7 @@ class AppContainer(private val context: Context) {
             token != null -> Unit // signed in meanwhile
             else -> SessionLog.session("no session on retry: ${retried.reason}")
         }
-        if (retried.dropBlob) writeToken(null)
+        if (retried.dropBlob) tokenStore.dropStoredIfSignedOut()
     }
 
     /**
@@ -349,21 +358,36 @@ class AppContainer(private val context: Context) {
      * (see PreferenceWrites).
      */
     private fun writeToken(sealed: String?) {
-        val change: (MutablePreferences) -> Unit = { prefs ->
+        val written = writeDurably { prefs ->
             if (sealed == null) prefs.remove(Keys.TOKEN) else prefs[Keys.TOKEN] = sealed
         }
+        if (!written) {
+            markMustClear("session token")
+        } else if (!urlUnwritten && mustClear.exists() && !mustClear.delete()) {
+            Log.w(SessionLog.TAG, "Couldn't remove the session-clear marker; the next launch will sign out")
+        }
+    }
+
+    /** The last server URL write failed: storage may pair the next token with another server (see [mustClear]). */
+    @Volatile private var urlUnwritten = false
+
+    /** [PreferenceWrites.writeNow], retried once. False if it couldn't be written. */
+    private fun writeDurably(change: (MutablePreferences) -> Unit): Boolean {
         repeat(2) {
             try {
                 writes.writeNow(change)
-                mustClear.delete()
-                return
+                return true
             } catch (e: IOException) {
-                Log.w(SessionLog.TAG, "Couldn't write the session token: ${e.javaClass.simpleName}")
+                Log.w(SessionLog.TAG, "Couldn't write to storage: ${e.javaClass.simpleName}")
             }
         }
+        return false
+    }
+
+    private fun markMustClear(what: String) {
         try {
             mustClear.createNewFile()
-            SessionLog.session("session write failed twice: the stored session is dropped at the next launch")
+            SessionLog.session("$what write failed twice: the stored session is dropped at the next launch")
         } catch (e: IOException) {
             Log.w(SessionLog.TAG, "Couldn't mark the session for clearing: ${e.javaClass.simpleName}")
         }

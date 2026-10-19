@@ -5,6 +5,10 @@ import com.mekari.project.core.ApiEvent
 import com.mekari.project.core.DeepLink
 import com.mekari.project.core.InMemoryServerSettings
 import com.mekari.project.core.InMemoryTokenStore
+import com.mekari.project.core.Me
+import com.mekari.project.core.MekariApi
+import com.mekari.project.core.ServerSettings
+import com.mekari.project.core.TokenStore
 import com.mekari.project.core.fake.DemoIds
 import com.mekari.project.core.fake.FakeApi
 import com.mekari.project.core.fake.FakeEndpoint
@@ -98,6 +102,108 @@ class AppSessionTest {
         assertTrue(session.state.value.auth is Auth.SignedIn)
         assertEquals("https://project.example.com", settings.serverUrl)
         assertEquals(DemoIds.MEKARI, session.scope.value?.id)
+    }
+
+    /**
+     * Sign-in writes, in order: the URL (persisted synchronously by the app) before the token, which LiveApi saves
+     * inside login(). Recorded through settings, the token store, and a client that saves like LiveApi.
+     */
+    private class Recorder(url: String?, token: String?) {
+        val log = mutableListOf<String>()
+        val settings = object : ServerSettings {
+            override var serverUrl: String? = url
+                set(value) {
+                    field = value
+                    log += "url=$value"
+                }
+        }
+        val tokens = object : TokenStore {
+            private val inner = InMemoryTokenStore(token)
+            override fun load() = inner.load()
+            override fun save(token: String) = inner.save(token).also { log += "save" }
+            override fun clear() = inner.clear().also { log += "clear" }
+            override fun clearIf(expected: String) = inner.clearIf(expected)
+        }
+
+        fun client(fake: FakeApi): (String, TokenStore) -> MekariApi = { _, store ->
+            object : MekariApi by fake {
+                override suspend fun health() = fake.health().also { log += "health" }
+
+                // What a stored session would ride along with (LiveApi itself never sends one on login).
+                override suspend fun login(email: String, password: String): Me {
+                    log += "login(stored=${store.load()})"
+                    return fake.login(email, password).also { store.save("new-token") }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun signInStoresTheServerBeforeTheTokenAndNeverSendsAnotherServersSession() = runTest {
+        val old = "https://old.example.com"
+        // Offline at launch left a kept session for the old server; the user signs in somewhere else.
+        val switching = Recorder(old, "old-token")
+        val fake = demoFake(email = null)
+        val session = AppSession(
+            switching.settings,
+            switching.tokens,
+            switching.client(fake),
+            InMemoryFeaturePrefs(),
+            backgroundScope,
+            TestTime.clock
+        )
+        session.signIn("new.example.com", "alice@example.com", DemoIds.PASSWORD)
+        assertTrue(session.state.value.auth is Auth.SignedIn)
+        assertEquals(
+            listOf("clear", "health", "url=https://new.example.com", "login(stored=null)", "save"),
+            switching.log
+        )
+
+        // A failed sign-in elsewhere puts the old URL back (and still never sent the old cookie).
+        val failing = Recorder(old, "old-token")
+        val failingSession = AppSession(
+            failing.settings,
+            failing.tokens,
+            failing.client(demoFake(email = null)),
+            InMemoryFeaturePrefs(),
+            backgroundScope,
+            TestTime.clock
+        )
+        failingSession.signIn("new.example.com", "alice@example.com", "wrong")
+        assertEquals(SignInError.WrongCredentials, failingSession.state.value.signInError)
+        assertEquals(old, failing.settings.serverUrl)
+        assertEquals(
+            listOf("clear", "health", "url=https://new.example.com", "login(stored=null)", "url=$old"),
+            failing.log
+        )
+
+        // The same server keeps the kept session until the new login replaces it.
+        val same = Recorder(old, "old-token")
+        val sameSession =
+            AppSession(
+                same.settings,
+                same.tokens,
+                same.client(demoFake(email = null)),
+                InMemoryFeaturePrefs(),
+                backgroundScope,
+                TestTime.clock
+            )
+        sameSession.signIn(old, "alice@example.com", DemoIds.PASSWORD)
+        assertEquals(listOf("health", "url=$old", "login(stored=old-token)", "save"), same.log)
+
+        // A session only on disk (the Keystore couldn't open it yet) is cleared too: once the new URL is stored,
+        // restoring it would send the old server's cookie there.
+        val diskOnly = Recorder(old, null)
+        val diskOnlySession = AppSession(
+            diskOnly.settings,
+            diskOnly.tokens,
+            diskOnly.client(demoFake(email = null)),
+            InMemoryFeaturePrefs(),
+            backgroundScope,
+            TestTime.clock
+        )
+        diskOnlySession.signIn("new.example.com", "alice@example.com", DemoIds.PASSWORD)
+        assertEquals("clear", diskOnly.log.first())
     }
 
     @Test

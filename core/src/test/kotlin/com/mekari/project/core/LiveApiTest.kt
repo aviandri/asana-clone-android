@@ -62,6 +62,53 @@ class LiveApiTest {
         json("""{"error":{"code":"$errorCode","message":"m"}}""", code)
 
     @Test
+    fun loginNeverSendsAStoredSession() = runBlocking {
+        tokens.save("kept-from-another-server")
+        server.enqueue(json(me).addHeader("Set-Cookie", "sid=fresh; Path=/"))
+        api.login("alice@example.com", "pw")
+        assertNull(server.takeRequest().getHeader("Cookie"))
+        assertEquals("fresh", tokens.load())
+    }
+
+    @Test
+    fun logoutEndsTheSessionFirstSoASignInDuringAHangingRequestSurvives() = runBlocking {
+        tokens.save("A")
+        server.enqueue(MockResponse().setResponseCode(204).setHeadersDelay(500, TimeUnit.MILLISECONDS))
+        val logout = async(Dispatchers.IO) { api.logout() }
+        val request = server.takeRequest(5, TimeUnit.SECONDS)!!
+        assertEquals("/api/v1/auth/logout", request.path)
+        assertEquals("sid=A", request.getHeader("Cookie"))
+        assertNull("signed out before the server answers", tokens.load())
+        tokens.save("B") // signed in to another account while the logout hangs
+        logout.await()
+        assertEquals("B", tokens.load())
+
+        // Signed out already: nothing to send.
+        tokens.clear()
+        api.logout()
+        assertEquals(1, server.requestCount)
+    }
+
+    @Test
+    fun redirectsAreNeverFollowed() = runBlocking {
+        val elsewhere = MockWebServer().apply { start() }
+        try {
+            tokens.save("tok")
+            server.enqueue(MockResponse().setResponseCode(302).setHeader("Location", elsewhere.url("/api/v1/me/tasks")))
+            server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", elsewhere.url("/steal")))
+            val error = runCatching { api.myTasks(includeCompleted = false) }.exceptionOrNull() as ApiError
+            assertEquals(302, error.status)
+            assertEquals(ApiError.Code("REDIRECT"), error.code)
+            val login = runCatching { api.login("alice@example.com", "pw") }.exceptionOrNull() as ApiError
+            assertEquals(307, login.status)
+            assertEquals("the cookie and the password stay put", 0, elsewhere.requestCount)
+            assertEquals("tok", tokens.load())
+        } finally {
+            elsewhere.shutdown()
+        }
+    }
+
+    @Test
     fun loginStoresTheSidCookieAndLaterRequestsSendIt() = runBlocking {
         server.enqueue(
             json(

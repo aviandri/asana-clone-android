@@ -72,7 +72,7 @@ class PersistentTokenStoreTest {
                 "401 ignored (worker): sent with an older session",
                 "session cleared: 401-clear(worker)",
                 "401 ignored (app): already signed out",
-                "session cleared: user-sign-out"
+                "session cleared: user-sign-out or sign-in to another server"
             ),
             log
         )
@@ -153,5 +153,29 @@ class PersistentTokenStoreTest {
         assertFalse(store.adopt("kept"))
         assertEquals("fresh", store.load())
         assertEquals(listOf(null, "fresh"), persisted)
+    }
+
+    @Test
+    fun aDelayedDropNeverRemovesATokenStoredMeanwhile() {
+        val persisted = mutableListOf<String?>()
+        val store = PersistentTokenStore(null) { persisted += it }
+        store.dropStoredIfSignedOut()
+        assertEquals(listOf<String?>(null), persisted)
+        store.save("fresh")
+        store.dropStoredIfSignedOut()
+        assertEquals(listOf(null, "fresh"), persisted)
+    }
+
+    @Test
+    fun aPinnedViewOnlyEverSeesTheSessionItStartedWith() {
+        val store = PersistentTokenStore("A") { }
+        val worker = store.pinned("worker")
+        assertEquals("A", worker.load())
+        store.save("B") // a new sign-in while the check runs
+        assertNull("never B's cookie", worker.load())
+        assertFalse(worker.clearIf("A"))
+        assertEquals("B", store.load())
+        worker.clear()
+        assertEquals("a pinned clear only clears its own session", "B", store.load())
     }
 }
