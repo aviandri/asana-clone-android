@@ -78,6 +78,7 @@ import com.mekari.project.ui.components.InlineAddField
 import com.mekari.project.ui.components.rememberAddFieldStates
 import com.mekari.project.ui.components.taskDragSource
 import com.mekari.project.ui.components.taskDropTarget
+import com.mekari.project.ui.components.taskRowAnimation
 import com.mekari.project.ui.launchAction
 import com.mekari.project.ui.runAction
 import java.time.LocalDate
@@ -266,7 +267,7 @@ private fun ProjectList(
             }
             items(ids, key = { it }, contentType = { "task" }) { id ->
                 val task = tasks[id] ?: return@items
-                DropZone(onDrop = { drop(it, sectionId, id) }, modifier = Modifier.animateItem()) { highlight ->
+                DropZone(onDrop = { drop(it, sectionId, id) }, modifier = taskRowAnimation()) { highlight ->
                     Column {
                         if (highlight) HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.primary)
                         TaskRow(
@@ -359,7 +360,7 @@ private fun ProjectBoard(
                             val task = tasks[id] ?: return@items
                             DropZone(onDrop = {
                                 drop(it, sectionId, id)
-                            }, modifier = Modifier.animateItem()) { cardHighlight ->
+                            }, modifier = taskRowAnimation()) { cardHighlight ->
                                 BoardCard(
                                     task = task,
                                     canEdit = state.canEdit,

@@ -6,6 +6,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.mekari.project.core.DeepLink
@@ -13,6 +14,7 @@ import com.mekari.project.ui.LocalAppScope
 import com.mekari.project.ui.MekariApp
 import com.mekari.project.ui.MekariProjectTheme
 import com.mekari.project.ui.components.CompletionPrefs
+import com.mekari.project.ui.components.CompletionSound
 import com.mekari.project.ui.components.LocalCompletionPrefs
 
 class MainActivity : ComponentActivity() {
@@ -26,6 +28,8 @@ class MainActivity : ComponentActivity() {
         val session = container.session(fakeApi = flags.fakeApi, signedIn = !flags.signedOut)
         setContent {
             val prefs by container.prefs.collectAsStateWithLifecycle()
+            // Decode the chime before the first tap, once the setting is on.
+            if (prefs.completionSound) LaunchedEffect(Unit) { CompletionSound.prepare(applicationContext) }
             CompositionLocalProvider(
                 LocalAppScope provides container.appScope,
                 LocalCompletionPrefs provides CompletionPrefs(playSound = prefs.completionSound)

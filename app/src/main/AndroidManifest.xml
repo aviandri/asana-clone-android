@@ -15,6 +15,7 @@
     android:name=".MekariApplication"
     android:allowBackup="false"
     android:dataExtractionRules="@xml/data_extraction_rules"
+    android:enableOnBackInvokedCallback="true"
     android:icon="@mipmap/ic_launcher"
     android:label="@string/app_name"
     android:roundIcon="@mipmap/ic_launcher"

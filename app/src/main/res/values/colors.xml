@@ -2,4 +2,7 @@
 <resources>
   <color name="brand_magenta">#E0257F</color>
   <color name="brand_magenta_light">#FF5FA2</color>
+  <!-- The Compose surfaces (Theme.kt), so the window behind the first frame matches. -->
+  <color name="surface_light">#FFF8F8</color>
+  <color name="surface_dark">#191114</color>
 </resources>

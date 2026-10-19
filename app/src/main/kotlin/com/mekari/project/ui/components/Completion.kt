@@ -4,7 +4,6 @@ import android.content.Context
 import android.os.Build
 import android.provider.Settings
 import android.view.HapticFeedbackConstants
-import android.view.SoundEffectConstants
 import android.view.View
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
@@ -16,6 +15,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -127,27 +127,33 @@ fun CompletionMark(checked: Boolean, size: Dp = 22.dp, modifier: Modifier = Modi
     Canvas(modifier.size(size).scale(pop.value)) {
         val stroke = this.size.minDimension * 0.08f
         val radius = this.size.minDimension / 2
-        drawCircle(outline.copy(alpha = 1f - progress), radius = radius - stroke / 2, style = Stroke(stroke))
-        drawCircle(accent.copy(alpha = progress), radius = radius)
-        if (progress > 0f) {
-            val w = this.size.width
-            val h = this.size.height
-            val check = Path().apply {
-                moveTo(w * 0.28f, h * 0.53f)
-                lineTo(w * 0.44f, h * 0.68f)
-                lineTo(w * 0.73f, h * 0.36f)
-            }
-            // Draw the first `progress` of the check: the stroke goes down, then up.
-            val measure = PathMeasure().apply { setPath(check, false) }
-            val drawn = Path()
-            val length = if (animate) measure.length * progress else measure.length
-            measure.getSegment(0f, length, drawn, true)
-            drawPath(
-                drawn,
-                onAccent.copy(alpha = if (animate) 1f else progress),
-                style = Stroke(width = this.size.minDimension * 0.11f, cap = StrokeCap.Round, join = StrokeJoin.Round)
-            )
+        // Nothing is drawn at the ends of the animation but the ring or the full mark: a near-zero fill or
+        // check must not leave a speck behind (QA A2).
+        if (progress < 1f) {
+            drawCircle(outline.copy(alpha = 1f - progress), radius = radius - stroke / 2, style = Stroke(stroke))
         }
+        if (progress <= 0f) return@Canvas
+        drawCircle(accent.copy(alpha = progress), radius = radius)
+        val w = this.size.width
+        val h = this.size.height
+        val check = Path().apply {
+            moveTo(w * 0.28f, h * 0.53f)
+            lineTo(w * 0.44f, h * 0.68f)
+            lineTo(w * 0.73f, h * 0.36f)
+        }
+        // Draw the first `progress` of the check: the stroke goes down, then up.
+        val measure = PathMeasure().apply { setPath(check, false) }
+        val checkStroke = this.size.minDimension * 0.11f
+        val length = if (animate) measure.length * progress else measure.length
+        // A round cap on a near-zero segment is a dot: start the check only once it's longer than it's wide.
+        if (length < checkStroke) return@Canvas
+        val drawn = Path()
+        measure.getSegment(0f, length, drawn, true)
+        drawPath(
+            drawn,
+            onAccent.copy(alpha = if (animate) 1f else progress),
+            style = Stroke(width = checkStroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        )
     }
 }
 
@@ -194,13 +200,13 @@ fun CompletionTitle(
     )
 }
 
-/** Haptic, the optional tick and the TalkBack announcement for a checkbox tap. */
+/** Haptic, the optional chime ([CompletionSound]) and the TalkBack announcement for a checkbox tap. */
 object CompletionEffects {
     fun play(view: View, completing: Boolean, title: String, sound: Boolean) {
         val confirm = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
         val haptic = if (confirm) HapticFeedbackConstants.CONFIRM else HapticFeedbackConstants.CONTEXT_CLICK
         view.performHapticFeedback(haptic)
-        if (completing && sound) view.playSoundEffect(SoundEffectConstants.CLICK)
+        if (completing && sound) CompletionSound.play(view.context)
         @Suppress("DEPRECATION")
         view.announceForAccessibility(if (completing) "Completed $title" else "Marked $title incomplete")
     }
@@ -211,6 +217,13 @@ object CompletionEffects {
         view.announceForAccessibility("Couldn't complete $title")
     }
 }
+
+/**
+ * How task rows enter and leave a lazy list (the insert after an add; the collapse after the completion
+ * linger). Timed fades rather than the default springs, so a leaving row is gone at a known moment instead of
+ * on a long, nearly invisible tail.
+ */
+fun LazyItemScope.taskRowAnimation(): Modifier = Modifier.animateItem(fadeInSpec = tween(150), fadeOutSpec = tween(180))
 
 /** Where the last completion tap was (root coordinates), so a celebration bursts from the checkbox. */
 object CelebrationOrigin {

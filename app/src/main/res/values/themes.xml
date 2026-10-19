@@ -2,6 +2,6 @@
 <resources>
   <style name="Theme.MekariProject" parent="android:Theme.Material.Light.NoActionBar">
     <item name="android:colorAccent">@color/brand_magenta</item>
-    <item name="android:windowBackground">@android:color/white</item>
+    <item name="android:windowBackground">@color/surface_light</item>
   </style>
 </resources>

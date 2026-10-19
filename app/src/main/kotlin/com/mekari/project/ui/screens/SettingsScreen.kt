@@ -106,7 +106,7 @@ fun SettingsScreen(session: AppSession, container: AppContainer, onBack: () -> U
                     modifier = Modifier.testTag(TestTags.NOTIFICATIONS_BLOCKED)
                 )
             }
-            SwitchRow("Sound", "A soft tick when you complete a task", prefs.completionSound) {
+            SwitchRow("Sound", "A soft chime when you complete a task (off in silent mode)", prefs.completionSound) {
                 container.setCompletionSound(it)
             }
             SwitchRow("Celebrations", "An occasional burst of petals when you finish a list", celebrations) {
