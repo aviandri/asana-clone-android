@@ -322,7 +322,11 @@ class TaskDetailStore internal constructor(
         attempt(onError = ::fail) {
             val stories = api.stories(taskId)
             tasks.upsert(api.task(taskId))
-            _state.update { it.copy(stories = stories) }
+            // Merged by key: a comment a concurrent send appended meanwhile stays until the next load.
+            _state.update { s ->
+                val loaded = stories.map { it.key }.toSet()
+                s.copy(stories = (stories + s.stories.filterNot { it.key in loaded }).sortedBy { it.createdAt })
+            }
         }
     }
 
@@ -487,6 +491,11 @@ class CommentComposer internal constructor(
             val comment = try {
                 api.addComment(taskId, body.trim(), posted.map { it.second })
             } catch (e: CancellationException) {
+                // The caller went away mid-send: the BE may have committed, so these chips are uncertain too (chips
+                // discarded meanwhile are left alone; the server sweeps them if they never landed).
+                uncertain += posted.map { it.first }.filter { id -> _state.value.attachments.any { it.id == id } }
+                uncertainBody = body.trim()
+                discardedWhileSending -= posted.map { it.first }.toSet()
                 throw e
             } catch (e: Exception) {
                 val error = e.asApiError()
@@ -549,23 +558,28 @@ class CommentComposer internal constructor(
         var landed = false
         for (chip in _state.value.attachments.filter { it.id in uncertain }) {
             val attachmentId = chip.attachment?.id ?: continue
-            if (stillADraft(attachmentId)) {
-                uncertain -= chip.id
-            } else {
-                drop(chip)
-                landed = true
+            when (draftStatus(attachmentId)) {
+                DraftStatus.DRAFT -> uncertain -= chip.id
+                DraftStatus.POSTED -> {
+                    drop(chip)
+                    landed = true
+                }
+                // Swept or deleted: it leaves, but it proves nothing landed (the text is posted normally).
+                DraftStatus.GONE -> drop(chip)
             }
         }
         if (landed) onReload()
         return landed
     }
 
-    /** Whether the attachment is still an unposted draft (404: gone, so no). Throws when the server can't say. */
-    private suspend fun stillADraft(attachmentId: String): Boolean = try {
+    private enum class DraftStatus { DRAFT, POSTED, GONE }
+
+    /** Still a draft, posted (on a comment, or no longer a draft), or gone (404). Throws when the server can't say. */
+    private suspend fun draftStatus(attachmentId: String): DraftStatus = try {
         val current = api.attachment(attachmentId)
-        current.draft && current.commentId == null
+        if (current.draft && current.commentId == null) DraftStatus.DRAFT else DraftStatus.POSTED
     } catch (e: ApiError) {
-        if (e.code == ApiError.Code.NOT_FOUND) false else throw e
+        if (e.code == ApiError.Code.NOT_FOUND) DraftStatus.GONE else throw e
     }
 
     private fun drop(chip: AttachmentUpload) {
@@ -582,16 +596,17 @@ class CommentComposer internal constructor(
         val attachmentId = chip.attachment?.id ?: return
         if (chip.id in uncertain) {
             uncertain -= chip.id
-            val draft = try {
-                stillADraft(attachmentId)
+            val status = try {
+                draftStatus(attachmentId)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
                 return
             }
-            if (!draft) {
-                onReload()
-                return
+            when (status) {
+                DraftStatus.DRAFT -> Unit
+                DraftStatus.POSTED -> return onReload()
+                DraftStatus.GONE -> return // nothing left to delete
             }
         }
         bestEffortDelete(attachmentId)
