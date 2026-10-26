@@ -303,7 +303,8 @@ class AttachmentFiles internal constructor(
     private val api: MekariApi,
     private val cache: AttachmentCache,
     /** The workspace scope's (main) coroutine scope: progress reports hop back onto it. */
-    private val scope: CoroutineScope
+    private val scope: CoroutineScope,
+    private val isClosed: () -> Boolean = { false }
 ) {
     data class State(
         /** Attachment id → progress while it downloads. */
@@ -362,12 +363,18 @@ class AttachmentFiles internal constructor(
      * thumbnail just shows the type icon). A closed scope's request is a CancellationException, as everywhere. For the
      * app's Coil fetcher.
      */
-    suspend fun imageData(path: String): ByteArray? = try {
-        api.attachmentData(path)
-    } catch (e: CancellationException) {
-        throw e
-    } catch (_: Exception) {
-        null
+    suspend fun imageData(path: String): ByteArray? {
+        val bytes = try {
+            api.attachmentData(path)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        }
+        // A request that was in flight when the scope closed (sign-out, lost access) ends as a cancellation, whatever
+        // came back: old-session bytes must not reach Coil after the wipe.
+        if (isClosed()) throw CancellationException("workspace scope closed")
+        return bytes
     }
 
     /** The downloaded copy if there is one. */

@@ -61,7 +61,13 @@ class LiveApi(
     private val server: HttpUrl = serverUrl.toHttpUrl()
 
     /** Whatever client is passed, it never follows a redirect. */
-    private val client: OkHttpClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+    private val client: OkHttpClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        // Never replay a request: a retried POST (a link, a comment with attachmentIds) would be a duplicate, and its
+        // 400 would read as a definite rejection.
+        .retryOnConnectionFailure(false)
+        .build()
 
     /**
      * Uploads and downloads: the server may sit quiet for a while after the last byte (storing, thumbnails), so a

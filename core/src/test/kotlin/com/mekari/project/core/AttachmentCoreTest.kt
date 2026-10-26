@@ -117,14 +117,25 @@ class AttachmentModelTest {
             "/api/v1/tasks/x",
             "https://evil/api/v1/attachments/x",
             "/api/v1/attachments/../auth/me",
-            "//evil/api/v1/attachments/x"
+            "//evil/api/v1/attachments/x",
+            "/api/v1/attachments/%2E%2e/auth/me",
+            "/api/v1/attachments/%2e%2E/x"
         )) {
             assertFalse(bad, AttachmentLinks.isAttachmentPath(bad))
         }
         assertEquals("etcpasswd", AttachmentLinks.safeFileName("../../etc/passwd"))
         assertEquals("file", AttachmentLinks.safeFileName("   "))
-        assertEquals("agpj.exe", AttachmentLinks.safeFileName("a‮gpj.exe"))
-        for (name in listOf(". a", " .. b.txt", ".‮ c", "x", "é".repeat(300) + ".pdf", " . . d ")) {
+        assertEquals("agpj.exe", AttachmentLinks.safeFileName("a\u202Egpj.exe"))
+        val names = listOf(
+            ". a",
+            " .. b.txt",
+            ".\u202E c",
+            "x",
+            "é".repeat(300) + ".pdf",
+            " . . d ",
+            "a" + " ".repeat(250) + "b.pdf"
+        )
+        for (name in names) {
             val once = AttachmentLinks.safeFileName(name)
             assertEquals("idempotent for $name", once, AttachmentLinks.safeFileName(once))
         }
@@ -237,6 +248,58 @@ class AttachmentLiveApiTest {
         val exact = SourceBody(ZeroSource(AttachmentLimits.MAX_UPLOAD_BYTES, declared = null), null) {}
         exact.writeTo(blackholeSink().buffer())
         assertFalse(exact.tooLarge)
+    }
+
+    @Test
+    fun anUnknownSizeReportsTheWholeBodyAtTheEndOfTheStream() {
+        val seen = mutableListOf<TransferProgress>()
+        SourceBody(ZeroSource(5000, declared = null), null) { seen += it }.writeTo(blackholeSink().buffer())
+        assertEquals("Finishing can show (and a 429 won't re-send)", TransferProgress(5000, 5000), seen.last())
+    }
+
+    @Test
+    fun aSourceThatThrowsAtRuntimeFailsTheCallNotTheDispatcher() {
+        val revoked = object : UploadSource {
+            override val name = "x"
+            override val size: Long? = 1
+            override fun open(): InputStream = throw SecurityException("grant revoked")
+        }
+        try {
+            SourceBody(revoked, 1) {}.writeTo(blackholeSink().buffer())
+            fail("expected an IOException")
+        } catch (e: java.io.IOException) {
+            assertTrue(e.cause is SecurityException)
+        }
+    }
+
+    @Test
+    fun requestsAreNeverReplayed() = runBlocking {
+        // OkHttp replays a request that fails on a reused (pooled) connection, and would get the 201: a duplicate link
+        // (or comment) on the server. Warm the pool first, then drop the connection after the POST.
+        server.enqueue(MockResponse().setBody(FILE_JSON))
+        api.attachment("a0000000-0000-4000-8000-000000000001")
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        server.enqueue(MockResponse().setResponseCode(201).setBody(FILE_JSON))
+        try {
+            api.addLink(TASK_ID, "https://example.com", null, draft = true)
+            fail("expected a transport error")
+        } catch (e: ApiError) {
+            assertEquals(ApiError.Code.TRANSPORT, e.code)
+        }
+        assertEquals("the GET and one POST", 2, server.requestCount)
+    }
+
+    @Test
+    fun aDownloadNeverCreatesItsFolder() = runBlocking {
+        val gone = File(scratch, "wiped/a0000000-0000-4000-8000-000000000001")
+        server.enqueue(MockResponse().setBody("bytes"))
+        try {
+            api.download("/api/v1/attachments/a0000000-0000-4000-8000-000000000001/content", File(gone, "f.txt"))
+            fail("expected a failure")
+        } catch (e: ApiError) {
+            assertEquals(ApiError.Code.TRANSPORT, e.code)
+        }
+        assertFalse("a download outliving a wipe can't recreate the folder", gone.exists())
     }
 
     @Test

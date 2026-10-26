@@ -118,6 +118,7 @@ interface MekariApi {
      * GETs a server-relative attachment path (`contentPath`, `thumbnailPath(size)`…) into [destination],
      * replacing it only once a 200 body is complete. With [etag], sends `If-None-Match`; a 304 leaves
      * [destination] alone. Paths outside `/api/v1/attachments/` are refused (VALIDATION) without a request.
+     * [destination]'s folder must exist (the download never creates it).
      */
     suspend fun download(
         path: String,

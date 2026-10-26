@@ -68,7 +68,7 @@ class WorkspaceScope internal constructor(
     val completionFeedback = CompletionFeedback(prefs, cooldown) { api.closed }
 
     /** Downloads for this workspace (through the session's cache). */
-    val attachmentFiles = AttachmentFiles(api, cache, coroutineScope)
+    val attachmentFiles = AttachmentFiles(api, cache, coroutineScope) { api.closed }
 
     private val projectStores = mutableMapOf<String, ProjectStore>()
     private val detailStores = mutableMapOf<String, TaskDetailStore>()
