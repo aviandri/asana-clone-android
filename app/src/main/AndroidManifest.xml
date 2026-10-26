@@ -9,6 +9,11 @@
     <intent>
       <action android:name="android.support.customtabs.action.CustomTabsService" />
     </intent>
+    <!-- Attachments: is there an app that can open this file (else "No app can open this file")? -->
+    <intent>
+      <action android:name="android.intent.action.VIEW" />
+      <data android:mimeType="*/*" />
+    </intent>
   </queries>
 
   <application
@@ -39,5 +44,15 @@
       </intent-filter>
       <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
     </activity>
+    <!-- Attachments shared with other apps (Open with, Share): only res/xml/attachment_paths.xml is exposed. -->
+    <provider
+      android:name="androidx.core.content.FileProvider"
+      android:authorities="${applicationId}.attachments"
+      android:exported="false"
+      android:grantUriPermissions="true">
+      <meta-data
+        android:name="android.support.FILE_PROVIDER_PATHS"
+        android:resource="@xml/attachment_paths" />
+    </provider>
   </application>
 </manifest>

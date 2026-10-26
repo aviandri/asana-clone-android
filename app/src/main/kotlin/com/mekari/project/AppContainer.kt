@@ -19,6 +19,8 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
+import coil3.ImageLoader
+import com.mekari.project.core.AttachmentCache
 import com.mekari.project.core.DeepLink
 import com.mekari.project.core.LiveApi
 import com.mekari.project.core.ServerSettings
@@ -30,6 +32,7 @@ import com.mekari.project.feature.FeaturePrefs
 import com.mekari.project.feature.LoadState
 import com.mekari.project.feature.NavigationTarget
 import com.mekari.project.feature.SignInError
+import com.mekari.project.ui.attachments.Thumbnails
 import java.io.File
 import java.io.IOException
 import java.security.KeyStore
@@ -149,16 +152,33 @@ class AppContainer(private val context: Context) {
 
     private var currentSession: AppSession? = null
 
+    /** Attachment downloads (SPEC-ANDROID §8): cacheDir/attachments, the FileProvider root, 500 MB LRU. */
+    val attachmentCacheDir: File get() = File(context.cacheDir, "attachments")
+
+    /** Coil for attachment thumbnails (memory + cacheDir/attachment-thumbs), cleared with every attachment wipe. */
+    val thumbnailLoader: ImageLoader by lazy { Thumbnails.imageLoader(context) }
+
+    /** After every wipe of the attachment cache (sign-out, lost workspace, start while signed out). */
+    private val attachmentsWiped: () -> Unit = { Thumbnails.clear(thumbnailLoader) }
+
     /** The one session. With the fake-API launch flag it runs on FakeApi + demo data (tests, device QA). */
     fun session(fakeApi: Boolean, signedIn: Boolean = true, fake: FakeApi? = null): AppSession {
         currentSession?.let { return it }
         val session = if (fakeApi) {
             val api = fake ?: FakeApi(signedInAs = if (signedIn) "alice@example.com" else null)
-            AppSession.uiTest(signedIn, appScope, api)
+            AppSession.uiTest(signedIn, appScope, api, AttachmentCache(attachmentCacheDir), attachmentsWiped)
         } else {
             val tokens = tokenStore.forSource("app") // first touch restores (and may keep a blob)
             retryKeptSession()
-            AppSession(serverSettings, tokens, { url, store -> LiveApi(url, store) }, featurePrefs, appScope)
+            AppSession(
+                serverSettings,
+                tokens,
+                { url, store -> LiveApi(url, store) },
+                featurePrefs,
+                appScope,
+                attachmentCache = AttachmentCache(attachmentCacheDir),
+                onAttachmentsWiped = attachmentsWiped
+            )
         }
         currentSession = session
         liveSession = !fakeApi

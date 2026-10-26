@@ -765,3 +765,24 @@ class AttachmentFiles {                   // WorkspaceScope.attachmentFiles
   composer uploads (drafts are swept server-side after 24 h).
 - Deleting a comment removes its attachments from the task; a comment with attachments may be edited to an empty body (A9).
 - Process death drops in-flight uploads (the user retries), per SPEC-ANDROID §8.
+
+### :app (attachments UI)
+
+- **Libraries** (approved for v0.2 by the orchestrator, named in SPEC-ANDROID §8):
+  - `io.coil-kt.coil3:coil-compose` 3.0.4 shows thumbnails, link icons and og:images. No network module is
+    used: a custom `Fetcher` loads `AttachmentImage(path, files)` through `AttachmentFiles.imageData(path)`, so
+    it goes through the app's authenticated, workspace-scoped API client, and :core rejects non-attachment
+    paths. Memory cache plus a 50 MB disk cache in `cacheDir/attachment-thumbs`. Both are keyed by the
+    server path, which contains the attachment id.
+  - `androidx.media3:media3-exoplayer` + `media3-ui` 1.5.0 play video and audio, from the downloaded file only
+    (never the network URL). The player is released on ON_STOP and when the viewer goes away.
+- **Wipes:** `AppContainer` passes `AttachmentCache(cacheDir/attachments)` (500 MB, the FileProvider root) and
+  `onAttachmentsWiped = Thumbnails.clear(loader)`. Coil's caches are cleared on every attachment wipe:
+  sign-out, a lost workspace, and start() while signed out.
+- **FileProvider** (`<package>.attachments`) exposes only `cache/attachments/` (downloads) and
+  `cache/camera-captures/` (TakePicture output, uploaded as `FileUploadSource(owned = true)` and deleted once
+  the upload is done).
+- **Composer drafts** are discarded when the task screen leaves composition, unless
+  `activity.isChangingConfigurations` (the store outlives a rotation). Chips are only ever removed through
+  `CommentComposer.remove/discard`.
+- Release builds have `isMinifyEnabled = false`, so R8 doesn't run on them yet.

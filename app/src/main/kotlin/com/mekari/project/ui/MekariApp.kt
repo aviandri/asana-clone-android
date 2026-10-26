@@ -276,9 +276,14 @@ private fun MainShell(
                                 Box(Modifier.weight(1f).fillMaxHeight()) {
                                     paneTask?.let { id ->
                                         key(id) {
-                                            TaskDetailScreen(scope, id, onBack = {
-                                                paneTask = null
-                                            }, onOpenTask = openTask, inPane = true)
+                                            TaskDetailScreen(
+                                                scope,
+                                                id,
+                                                onBack = { paneTask = null },
+                                                onOpenTask = openTask,
+                                                inPane = true,
+                                                server = session.settings.serverUrl
+                                            )
                                         }
                                     } ?: NothingSelected()
                                 }
@@ -296,7 +301,13 @@ private fun MainShell(
         }
         composable(Routes.TASK) { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
-            TaskDetailScreen(scope, id, onBack = { nav.popBackStack() }, onOpenTask = { nav.navigate(Routes.task(it)) })
+            TaskDetailScreen(
+                scope,
+                id,
+                onBack = { nav.popBackStack() },
+                onOpenTask = { nav.navigate(Routes.task(it)) },
+                server = session.settings.serverUrl
+            )
         }
         composable(Routes.PROJECT) { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
