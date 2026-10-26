@@ -91,6 +91,10 @@ jobs:
       # The contract suite logs in many times from one IP; the BE default is 10/min.
       AUTH_RATE_LIMIT_MAX: "1000"
       MP_BASE_URL: http://127.0.0.1:3000
+      # Attachments (BE SPEC §13): the same BE build and DB on two more ports, for the 429 and
+      # 507 cases. Contract tests that need one skip when its variable is unset (local runs).
+      MP_BASE_URL_RATELIMIT: http://127.0.0.1:3001
+      MP_BASE_URL_NOSPACE: http://127.0.0.1:3002
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -113,12 +117,20 @@ jobs:
           npx prisma migrate deploy
           npm run build
           npm run seed
+          export STORAGE_DIR="$RUNNER_TEMP/attachments"
           nohup npm start > ../be.log 2>&1 &
-          for i in $(seq 1 30); do
-            curl -fsS http://127.0.0.1:3000/health > /dev/null && exit 0
-            sleep 1
+          # :3001 allows 3 uploads a minute (429 RATE_LIMITED); :3002 always wants more free space
+          # than the disk has (507 INSUFFICIENT_STORAGE).
+          PORT=3001 UPLOAD_RATE_LIMIT_MAX=3 nohup npm start > ../be-ratelimit.log 2>&1 &
+          PORT=3002 STORAGE_MIN_FREE_BYTES=1000000000000000000 nohup npm start > ../be-nospace.log 2>&1 &
+          for port in 3000 3001 3002; do
+            ok=
+            for i in $(seq 1 30); do
+              curl -fsS "http://127.0.0.1:$port/health" > /dev/null && { ok=1; break; }
+              sleep 1
+            done
+            [ -n "$ok" ] || { echo "backend :$port did not become healthy"; cat ../be*.log; exit 1; }
           done
-          echo "backend did not become healthy"; cat ../be.log; exit 1
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -138,15 +150,17 @@ jobs:
           print(f'contract tests: {tests} run, {skipped} skipped')
           raise SystemExit(0 if tests and not skipped else 1)
           EOF
-      - name: Backend log
+      - name: Backend logs
         if: always()
-        run: cat be.log || true
+        run: for f in be.log be-ratelimit.log be-nospace.log; do echo "== $f"; cat "$f" || true; done
       - name: Test reports
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: contract-test-reports
-          path: core/build/reports/tests/
+          path: |
+            core/build/reports/tests/
+            feature/build/reports/tests/
           retention-days: 14
 
   instrumented:
