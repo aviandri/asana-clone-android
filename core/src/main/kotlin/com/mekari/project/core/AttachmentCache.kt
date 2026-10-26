@@ -192,7 +192,14 @@ class AttachmentCache(
         loaded = true
         runCatching {
             MekariJson.decodeFromString(INDEX, indexFile.readText())
-        }.getOrNull()?.let { entries.putAll(it.filter { (id, e) -> isSafeId(id) && e.name == AttachmentLinks.safeFileName(e.name) }) }
+        }.getOrNull()?.let {
+            entries.putAll(
+                it.filter { (id, e) ->
+                    isSafeId(id) &&
+                        e.name == AttachmentLinks.safeFileName(e.name)
+                }
+            )
+        }
         directory.listFiles().orEmpty().forEach { if (it.name != "index.json" && it.name !in entries) remove(it) }
         for (id in entries.keys) {
             folder(id).listFiles().orEmpty().forEach { if (it.name.endsWith(".part")) remove(it) }
@@ -224,8 +231,9 @@ class AttachmentCache(
 
     companion object {
         /** A cache in a fresh temp folder (previews, UI tests, unit tests): never the app's real cache. */
-        fun scratch(): AttachmentCache =
-            AttachmentCache(File(System.getProperty("java.io.tmpdir"), "mekari-attachments-${java.util.UUID.randomUUID()}"))
+        fun scratch(): AttachmentCache = AttachmentCache(
+            File(System.getProperty("java.io.tmpdir"), "mekari-attachments-${java.util.UUID.randomUUID()}")
+        )
 
         internal val INDEX = MapSerializer(String.serializer(), Entry.serializer())
 

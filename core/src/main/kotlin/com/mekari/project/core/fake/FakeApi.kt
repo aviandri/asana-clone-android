@@ -3,19 +3,17 @@ package com.mekari.project.core.fake
 import com.mekari.project.core.Activity
 import com.mekari.project.core.ActivityType
 import com.mekari.project.core.ApiError
-import com.mekari.project.core.UploadSource
-import com.mekari.project.core.TransferProgress
-import com.mekari.project.core.LinkPreviewStatus
-import com.mekari.project.core.DownloadOutcome
-import com.mekari.project.core.AttachmentLinks
-import com.mekari.project.core.AttachmentLimits
-import com.mekari.project.core.AttachmentKind
-import com.mekari.project.core.Attachment
 import com.mekari.project.core.ApiEvent
+import com.mekari.project.core.Attachment
+import com.mekari.project.core.AttachmentKind
+import com.mekari.project.core.AttachmentLimits
+import com.mekari.project.core.AttachmentLinks
 import com.mekari.project.core.Comment
+import com.mekari.project.core.DownloadOutcome
 import com.mekari.project.core.FieldIssue
 import com.mekari.project.core.InboxNotification
 import com.mekari.project.core.InboxPage
+import com.mekari.project.core.LinkPreviewStatus
 import com.mekari.project.core.Me
 import com.mekari.project.core.MekariApi
 import com.mekari.project.core.Mentions
@@ -39,6 +37,8 @@ import com.mekari.project.core.TaskDetail
 import com.mekari.project.core.TaskItem
 import com.mekari.project.core.TaskParentRef
 import com.mekari.project.core.TeamRef
+import com.mekari.project.core.TransferProgress
+import com.mekari.project.core.UploadSource
 import com.mekari.project.core.User
 import com.mekari.project.core.UserSummary
 import com.mekari.project.core.Workspace
@@ -210,13 +210,22 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
      * Posts drafts as a comment by the signed-in user without going through the gate (no hold, no failNext): the
      * server committing a request whose answer is then lost.
      */
-    fun addCommentDirectly(taskId: String, attachmentIds: List<String>, body: String = ""): Comment = synchronized(lock) {
-        val user = requireUser()
-        val comment = Comment(newId(), summary(user)!!, body, Instant.now())
-        attachments.replaceAll { if (it.id in attachmentIds) it.copy(draft = false, commentId = comment.id) else it }
-        stories.getOrPut(taskId) { mutableListOf() } += comment
-        render(comment)
-    }
+    fun addCommentDirectly(taskId: String, attachmentIds: List<String>, body: String = ""): Comment =
+        synchronized(lock) {
+            val user = requireUser()
+            val comment = Comment(newId(), summary(user)!!, body, Instant.now())
+            attachments.replaceAll {
+                if (it.id in
+                    attachmentIds
+                ) {
+                    it.copy(draft = false, commentId = comment.id)
+                } else {
+                    it
+                }
+            }
+            stories.getOrPut(taskId) { mutableListOf() } += comment
+            render(comment)
+        }
 
     // Session
 
@@ -551,10 +560,22 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
         gate(FakeEndpoint.ADD_COMMENT, scoped = false) {
             val user = requireUser()
             val (task, _) = visibleTask(taskId)
-            if (attachmentIds.size > AttachmentLimits.MAX_PER_COMMENT) throw validation("attachmentIds", "At most 20 attachments")
+            if (attachmentIds.size >
+                AttachmentLimits.MAX_PER_COMMENT
+            ) {
+                throw validation("attachmentIds", "At most 20 attachments")
+            }
             val ids = attachmentIds.toSet()
             // BE: each must be a draft I uploaded on this task.
-            if (!ids.all { id -> attachments.any { it.id == id && it.draft && it.uploader.id == user && it.taskId == taskId } }) {
+            if (!ids.all { id ->
+                    attachments.any {
+                        it.id == id &&
+                            it.draft &&
+                            it.uploader.id == user &&
+                            it.taskId == taskId
+                    }
+                }
+            ) {
                 throw validation("attachmentIds", "Attachments must be your drafts on this task")
             }
             val text = if (ids.isEmpty()) nonEmpty(body, "body") else body.trim()
@@ -731,7 +752,8 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
             val clean = url.trim()
             val host = java.net.URI(clean).host.lowercase()
             val created = Attachment(
-                id = newId(), workspaceId = task.workspaceId, taskId = taskId, kind = AttachmentKind.LINK, draft = draft,
+                id = newId(), workspaceId = task.workspaceId, taskId = taskId, kind = AttachmentKind.LINK,
+                draft = draft,
                 uploader = summary(user)!!, createdAt = Instant.now(), url = clean,
                 title = title?.trim()?.takeIf { it.isNotEmpty() } ?: host, siteName = host,
                 provider = if ("figma.com" in host) "figma" else null, previewStatus = LinkPreviewStatus.READY
@@ -804,13 +826,19 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
         gate(FakeEndpoint.ATTACHMENT_DATA, scoped = false) { bytes(path).second }
 
     private fun bytes(path: String): Pair<Attachment, ByteArray> {
-        if (!AttachmentLinks.isAttachmentPath(path)) throw ApiError(ApiError.Code.VALIDATION, null, "Not an attachment address")
+        if (!AttachmentLinks.isAttachmentPath(
+                path
+            )
+        ) {
+            throw ApiError(ApiError.Code.VALIDATION, null, "Not an attachment address")
+        }
         val rest = path.removePrefix(AttachmentLinks.PATH_PREFIX)
         val id = rest.takeWhile { it != '/' && it != '?' }
         val what = rest.removePrefix(id).substringBefore('?')
         val attachment = visibleAttachment(id)
         return attachment to when {
-            what == "/content" -> blobs[id] ?: if (attachment.isImage) PNG_BYTES else (attachment.name ?: "file").toByteArray()
+            what == "/content" -> blobs[id]
+                ?: if (attachment.isImage) PNG_BYTES else (attachment.name ?: "file").toByteArray()
             what == "/thumbnail" && attachment.hasThumbnail -> PNG_BYTES
             what == "/icon" && attachment.hasIcon -> PNG_BYTES
             what == "/image" && attachment.hasImage -> PNG_BYTES

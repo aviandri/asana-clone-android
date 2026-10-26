@@ -108,7 +108,12 @@ private fun streamed(response: Response, destination: File, progress: (TransferP
             }
         }
         try {
-            Files.move(temp.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            Files.move(
+                temp.toPath(),
+                destination.toPath(),
+                StandardCopyOption.REPLACE_EXISTING,
+                StandardCopyOption.ATOMIC_MOVE
+            )
         } catch (_: Exception) {
             Files.move(temp.toPath(), destination.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }

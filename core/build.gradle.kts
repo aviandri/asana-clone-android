@@ -31,4 +31,11 @@ tasks.test {
     environment("MP_BASE_URL", baseUrl)
     // An input, so results cached without a backend (contract tests skipped) are never reused with one.
     inputs.property("mpBaseUrl", baseUrl)
+    // The attachment contract tests' 429 and 507 backends (BE with UPLOAD_RATE_LIMIT_MAX=3 / a huge
+    // STORAGE_MIN_FREE_BYTES); those tests skip when unset.
+    for (name in listOf("MP_BASE_URL_RATELIMIT", "MP_BASE_URL_NOSPACE")) {
+        val value = System.getenv(name) ?: ""
+        environment(name, value)
+        inputs.property(name, value)
+    }
 }

@@ -486,7 +486,18 @@ class AppSession(
         _scope.value?.close()
         api.setWorkspace(me.currentWorkspace?.id)
         val scope = me.currentWorkspace?.let {
-            WorkspaceScope(api, it, me.user.summary, appScope, clock, prefs, celebrationCooldown, uploads, uploadSlots, attachmentCache)
+            WorkspaceScope(
+                api,
+                it,
+                me.user.summary,
+                appScope,
+                clock,
+                prefs,
+                celebrationCooldown,
+                uploads,
+                uploadSlots,
+                attachmentCache
+            )
         }
         _scope.value = scope
         _state.update {

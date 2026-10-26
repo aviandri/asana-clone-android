@@ -150,12 +150,16 @@ interface UploadSource {
 
     fun open(): InputStream
 
-    /** Deletes the underlying file if it is ours (a camera capture's temp file); called once the upload is done with it. */
+    /**
+     * Called exactly once when the upload leaves its list (landed, cancelled, removed, discarded, sent, sign-out):
+     * delete the underlying file if it is ours (a camera capture's temp file). Default: nothing.
+     */
     fun delete() {}
 }
 
-/** An [UploadSource] over a file (tests, camera captures written to the cache). */
-class FileUploadSource(val file: File, override val name: String = file.name, private val owned: Boolean = false) : UploadSource {
+/** An [UploadSource] over a file (tests, camera captures written to the cache). [owned]: [delete] removes the file. */
+class FileUploadSource(val file: File, override val name: String = file.name, private val owned: Boolean = false) :
+    UploadSource {
     override val size: Long? get() = if (file.isFile) file.length() else null
     override fun open(): InputStream = file.inputStream()
     override fun delete() {
@@ -171,6 +175,15 @@ class FileUploadSource(val file: File, override val name: String = file.name, pr
 object AttachmentLinks {
     /** Every attachment path the API may fetch starts with this (A11: clients never build them). */
     const val PATH_PREFIX = "/api/v1/attachments/"
+
+    /**
+     * The absolute URL for a server-given attachment path (Coil loads thumbnails, link icons and images with the
+     * app's OkHttp client), or null for anything that isn't an attachment path.
+     */
+    fun absolute(path: String?, server: String): String? {
+        if (path == null || !isAttachmentPath(path)) return null
+        return server.trimEnd('/') + path
+    }
 
     /** The trimmed text when it is an absolute http(s) URL with a host, else null. Only such URLs are ever opened. */
     fun openable(text: String): String? {
@@ -203,8 +216,11 @@ object AttachmentLinks {
         var cleaned = buildString {
             name.codePoints().forEach { cp ->
                 val type = Character.getType(cp)
-                val bad = type == Character.CONTROL.toInt() || type == Character.FORMAT.toInt() ||
-                    cp == '/'.code || cp == '\\'.code || cp == ':'.code
+                val bad = type == Character.CONTROL.toInt() ||
+                    type == Character.FORMAT.toInt() ||
+                    cp == '/'.code ||
+                    cp == '\\'.code ||
+                    cp == ':'.code
                 if (!bad) appendCodePoint(cp)
             }
         }

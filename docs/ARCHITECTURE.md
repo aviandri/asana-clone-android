@@ -666,9 +666,12 @@ object AttachmentLimits { MAX_UPLOAD_BYTES = 104_857_600; MAX_PER_COMMENT = 20; 
 data class TransferProgress(completed: Long, total: Long?) { val fraction: Float? }
 sealed interface DownloadOutcome { NotModified; Downloaded(etag) }
 
-/** What an upload streams from: the app wraps a content:// Uri (ContentResolver + OpenableColumns). */
+/** What an upload streams from: the app wraps a content:// Uri (ContentResolver + OpenableColumns). open() is called
+ *  once per attempt (a retry opens it again); delete() exactly once when the upload leaves its list. */
 interface UploadSource { val name: String; val size: Long?; fun open(): InputStream; fun delete() {} }
-class FileUploadSource(file, name = file.name, owned = false) : UploadSource   // tests, camera captures
+class FileUploadSource(file, name = file.name, owned = false) : UploadSource   // owned: delete() removes the file
+                                                                                // (camera captures)
+AttachmentLinks.absolute(path, server): String?   // for Coil; only /api/v1/attachments/… paths
 
 // MekariApi additions
 suspend fun uploadAttachment(taskId, source: UploadSource, draft: Boolean, progress: (TransferProgress) -> Unit = {}): Attachment
@@ -709,7 +712,7 @@ class AttachmentCache(directory: File, capacity = 500 MB, io = Dispatchers.IO) {
 ### :feature
 
 ```kotlin
-data class AttachmentUpload(id, taskId, source: Source, state: State, size: Long?, deletesSource: Boolean) {
+data class AttachmentUpload(id: String /* UUID, stable */, taskId, source: Source, state: State, size: Long?) {
     sealed interface Source { File(source: UploadSource); Link(url, title) }
     sealed interface State { Queued; Uploading(progress); Finishing; Finished(attachment); Failed(error) }
     val name; val isActive; val isFinishing; val isFinished; val isFailed; val attachment: Attachment?
@@ -724,7 +727,7 @@ class AttachmentUploads {                 // AppSession.uploads: session-scoped,
 
 // TaskDetailStore.State additions: attachments, uploads, canAttach
 fun canDelete(attachment): Boolean                                    // uploader, project OWNER, workspace ADMIN; personal: + creator
-fun attach(source: UploadSource, deletesSource: Boolean = false)      // task-level; survives leaving the task
+fun attach(source: UploadSource)                                      // task-level; survives leaving the task
 suspend fun addLink(url, title): LinkResult
 fun retryUpload(id); fun cancelUpload(id): Boolean
 suspend fun deleteAttachment(id)                                      // optimistic; restores + lastError on refusal
@@ -733,7 +736,8 @@ suspend fun refreshLinkPreview(id)
 // CommentComposer.State additions: attachments (chips), sendingIds, isUploading, hasRoomForAnother
 fun canSend(text): Boolean                // text or ≥ 1 finished chip; nothing active; failed chips don't block
 suspend fun send(body): Boolean           // posts finished chips as attachmentIds; drops them and failed ones on success
-fun attach(source, deletesSource = false): Boolean                    // false = no room (20)
+fun attach(source): Boolean                                           // false = no room (20); a stream that runs
+                                                                      // past 100 MB (unknown size) → Failed(PAYLOAD_TOO_LARGE, status null)
 suspend fun attachLink(url, title): LinkResult                        // a failed link leaves no chip
 fun retry(id); suspend fun remove(id): Boolean                       // false while finishing or being posted
 suspend fun discard()                     // the UI calls it when the user leaves the task (not on rotation)

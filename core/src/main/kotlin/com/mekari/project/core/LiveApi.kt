@@ -331,8 +331,9 @@ class LiveApi(
 
     /** A GET of a server-given attachment path: the cookie, no workspace header (ID-addressed, BE §13). */
     private fun bytesRequest(path: String, etag: String?): Pair<Request, String?> {
-        val url = (server.toString().trimEnd('/') + path).takeIf { AttachmentLinks.isAttachmentPath(path) }?.toHttpUrlOrNull()
-            ?: throw ApiError(ApiError.Code.VALIDATION, null, "Not an attachment address")
+        val url =
+            (server.toString().trimEnd('/') + path).takeIf { AttachmentLinks.isAttachmentPath(path) }?.toHttpUrlOrNull()
+                ?: throw ApiError(ApiError.Code.VALIDATION, null, "Not an attachment address")
         val builder = Request.Builder().url(url).get().header("Accept", "*/*")
         etag?.let { builder.header("If-None-Match", it) }
         val sentToken = tokens.load()
@@ -390,6 +391,7 @@ class LiveApi(
             query.toSortedMap().forEach { (key, value) -> if (value != null) addQueryParameter(key, value) }
         }.build()
         val builder = Request.Builder().url(url).header("Accept", "application/json")
+
         @Suppress("NAME_SHADOWING")
         val requestBody = requestBody ?: body?.toString()?.toRequestBody(JSON_MEDIA)
         when (method) {

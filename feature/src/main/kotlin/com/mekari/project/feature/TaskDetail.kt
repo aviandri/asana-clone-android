@@ -1,10 +1,8 @@
 package com.mekari.project.feature
 
 import com.mekari.project.core.ApiError
-import com.mekari.project.core.UploadSource
-import com.mekari.project.core.TransferProgress
-import com.mekari.project.core.AttachmentLimits
 import com.mekari.project.core.Attachment
+import com.mekari.project.core.AttachmentLimits
 import com.mekari.project.core.Comment
 import com.mekari.project.core.MekariApi
 import com.mekari.project.core.Mentions
@@ -18,6 +16,8 @@ import com.mekari.project.core.Story
 import com.mekari.project.core.TaskChanges
 import com.mekari.project.core.TaskDetail
 import com.mekari.project.core.TaskItem
+import com.mekari.project.core.TransferProgress
+import com.mekari.project.core.UploadSource
 import com.mekari.project.core.UserSummary
 import com.mekari.project.core.WorkspaceRole
 import java.time.LocalDate
@@ -68,12 +68,16 @@ class TaskDetailStore internal constructor(
     private val _state = MutableStateFlow(State())
     val state: StateFlow<State> = _state.asStateFlow()
 
-    val composer: CommentComposer = CommentComposer(api, taskId, UserSearch(api, scope), UploadRunner(slots, scope)) { comment ->
-        _state.update { it.copy(stories = it.stories + comment) }
-        if (comment.attachments.isNotEmpty()) {
-            tasks.editAttachments(taskId) { list -> list.filterNot { a -> comment.attachments.any { it.id == a.id } } + comment.attachments }
+    val composer: CommentComposer =
+        CommentComposer(api, taskId, UserSearch(api, scope), UploadRunner(slots, scope)) { comment ->
+            _state.update { it.copy(stories = it.stories + comment) }
+            if (comment.attachments.isNotEmpty()) {
+                tasks.editAttachments(taskId) { list ->
+                    list.filterNot { a -> comment.attachments.any { it.id == a.id } } +
+                        comment.attachments
+                }
+            }
         }
-    }
 
     /** My role in a project, as fetched on load(). */
     private var fetchedRole: Pair<String, ProjectRole?>? = null
@@ -221,10 +225,10 @@ class TaskDetailStore internal constructor(
 
     /**
      * Starts a task-level upload (it carries on after leaving the task). Over 100 MB fails at once, without a
-     * request. [deletesSource]: a temp file of ours (a camera capture), deleted once the upload leaves the list.
+     * request. [UploadSource.delete] runs once the upload leaves the list.
      */
-    fun attach(source: UploadSource, deletesSource: Boolean = false) {
-        uploadStore.start(taskId, tasks[taskId]?.workspaceId ?: workspaceId, source, deletesSource)
+    fun attach(source: UploadSource) {
+        uploadStore.start(taskId, tasks[taskId]?.workspaceId ?: workspaceId, source)
     }
 
     /** Adds a task-level link. A failure comes back for the popover (local http(s) check first, then the server's). */
@@ -261,7 +265,15 @@ class TaskDetailStore internal constructor(
                     stories = if (left.isEmpty() && commentBefore.body.isBlank()) {
                         s.stories.filterNot { it.key == commentBefore.key }
                     } else {
-                        s.stories.map { if (it.key == commentBefore.key) commentBefore.copy(attachments = left) else it }
+                        s.stories.map {
+                            if (it.key ==
+                                commentBefore.key
+                            ) {
+                                commentBefore.copy(attachments = left)
+                            } else {
+                                it
+                            }
+                        }
                     }
                 )
             }
@@ -307,7 +319,9 @@ class TaskDetailStore internal constructor(
         }
     }
 
-    private fun comment(id: String): Comment? = _state.value.stories.firstOrNull { it is Comment && it.id == id } as? Comment
+    private fun comment(id: String): Comment? = _state.value.stories.firstOrNull {
+        it is Comment && it.id == id
+    } as? Comment
 
     private fun commentAttachment(id: String): Attachment? =
         _state.value.stories.filterIsInstance<Comment>().flatMap { it.attachments }.firstOrNull { it.id == id }
@@ -489,18 +503,16 @@ class CommentComposer internal constructor(
 
     /**
      * Uploads a file as a draft (`?draft=true`). False when the comment already has 20 attachments (the UI says so).
-     * Over 100 MB → a failed chip at once, without a request. [deletesSource]: a temp file of ours, deleted once the
-     * chip goes.
+     * Over 100 MB → a failed chip at once, without a request. [UploadSource.delete] runs once the chip goes.
      */
-    fun attach(source: UploadSource, deletesSource: Boolean = false): Boolean {
+    fun attach(source: UploadSource): Boolean {
         if (!_state.value.hasRoomForAnother) return false
         val error = preflight(source)
         val chip = AttachmentUpload(
             taskId = taskId,
             source = AttachmentUpload.Source.File(source),
             state = error?.let { AttachmentUpload.State.Failed(it) } ?: AttachmentUpload.State.Queued,
-            size = source.size,
-            deletesSource = deletesSource
+            size = source.size
         )
         _state.update { it.copy(attachments = it.attachments + chip) }
         if (error == null) run(chip)
@@ -599,7 +611,19 @@ class CommentComposer internal constructor(
             return
         }
         if (!chip.accepts(state)) return
-        _state.update { s -> s.copy(attachments = s.attachments.map { if (it.id == id) it.copy(state = state) else it }) }
+        _state.update { s ->
+            s.copy(
+                attachments = s.attachments.map {
+                    if (it.id ==
+                        id
+                    ) {
+                        it.copy(state = state)
+                    } else {
+                        it
+                    }
+                }
+            )
+        }
     }
 
     private suspend fun bestEffortDelete(attachmentId: String) {

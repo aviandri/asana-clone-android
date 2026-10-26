@@ -123,10 +123,18 @@ class TaskCache internal constructor(
             return
         }
         val list = change(detail.attachments).sortedByDescending { it.createdAt }
-        var task = detail.task.copy(attachmentCount = maxOf(0, detail.task.attachmentCount + list.size - detail.attachments.size))
+        var task = detail.task.copy(
+            attachmentCount = maxOf(
+                0,
+                detail.task.attachmentCount + list.size - detail.attachments.size
+            )
+        )
         if (bumpedAt != null && bumpedAt > task.updatedAt) task = task.copy(updatedAt = bumpedAt)
         confirmedDetails[id] = detail.copy(task = task, attachments = list)
-        confirmed[id]?.let { confirmed[id] = it.copy(attachmentCount = task.attachmentCount, updatedAt = maxOf(it.updatedAt, task.updatedAt)) }
+        confirmed[id]?.let {
+            confirmed[id] =
+                it.copy(attachmentCount = task.attachmentCount, updatedAt = maxOf(it.updatedAt, task.updatedAt))
+        }
         recompute(id)
         publish()
     }

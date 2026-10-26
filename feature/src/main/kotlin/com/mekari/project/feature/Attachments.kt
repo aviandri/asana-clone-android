@@ -33,9 +33,7 @@ data class AttachmentUpload(
     val source: Source,
     val state: State = State.Queued,
     /** FILE size when known. */
-    val size: Long? = null,
-    /** The source is ours (a camera capture's temp file): [UploadSource.delete] runs once the upload leaves its list. */
-    val deletesSource: Boolean = false
+    val size: Long? = null
 ) {
     sealed interface Source {
         data class File(val source: UploadSource) : Source
@@ -85,8 +83,8 @@ data class AttachmentUpload(
         else -> true
     }
 
+    /** The upload leaves its list: [UploadSource.delete] (once; the source decides whether a file goes). */
     internal fun cleanUp() {
-        if (!deletesSource) return
         (source as? Source.File)?.source?.let { runCatching { it.delete() } }
     }
 }
@@ -130,7 +128,12 @@ internal class UploadRunner(val slots: UploadSlots, private val scope: Coroutine
     private val jobs = mutableMapOf<String, Job>()
 
     /** Starts [upload], reporting each state change through [update] (on the caller's dispatcher). */
-    fun run(upload: AttachmentUpload, draft: Boolean, api: MekariApi, update: (String, AttachmentUpload.State) -> Unit) {
+    fun run(
+        upload: AttachmentUpload,
+        draft: Boolean,
+        api: MekariApi,
+        update: (String, AttachmentUpload.State) -> Unit
+    ) {
         val id = upload.id
         jobs.remove(id)?.cancel()
         val job = scope.launch {
@@ -143,7 +146,13 @@ internal class UploadRunner(val slots: UploadSlots, private val scope: Coroutine
                             api.uploadAttachment(upload.taskId, source.source, draft) { progress ->
                                 val sentAll = progress.total?.let { progress.completed >= it } ?: false
                                 if (sentAll) bodySent.set(true)
-                                val state = if (sentAll) AttachmentUpload.State.Finishing else AttachmentUpload.State.Uploading(progress)
+                                val state = if (sentAll) {
+                                    AttachmentUpload.State.Finishing
+                                } else {
+                                    AttachmentUpload.State.Uploading(
+                                        progress
+                                    )
+                                }
                                 scope.launch { update(id, state) }
                             }
                         }
@@ -219,14 +228,13 @@ class AttachmentUploads internal constructor(
     fun uploads(taskId: String): List<AttachmentUpload> = _state.value.filter { it.taskId == taskId }
 
     /** Starts a task-level (non-draft) upload. A file over 100 MB shows as failed at once, without a request. */
-    internal fun start(taskId: String, workspaceId: String, source: UploadSource, deletesSource: Boolean) {
+    internal fun start(taskId: String, workspaceId: String, source: UploadSource) {
         val error = preflight(source)
         val upload = AttachmentUpload(
             taskId = taskId,
             source = AttachmentUpload.Source.File(source),
             state = error?.let { AttachmentUpload.State.Failed(it) } ?: AttachmentUpload.State.Queued,
-            size = source.size,
-            deletesSource = deletesSource
+            size = source.size
         )
         workspaces[upload.id] = workspaceId
         publish(_state.value + upload)
@@ -319,7 +327,15 @@ class AttachmentFiles internal constructor(
             val file = cache.file(attachment, api) { progress ->
                 // Hop to main; a report after the download ended is dropped.
                 scope.launch {
-                    _state.update { s -> if (id in s.downloads) s.copy(downloads = s.downloads + (id to progress)) else s }
+                    _state.update { s ->
+                        if (id in
+                            s.downloads
+                        ) {
+                            s.copy(downloads = s.downloads + (id to progress))
+                        } else {
+                            s
+                        }
+                    }
                 }
             }
             _state.update { it.copy(lastError = null) }

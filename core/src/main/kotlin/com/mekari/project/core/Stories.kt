@@ -81,7 +81,8 @@ internal object CommentSerializer : FlatSerializer<Comment>("Comment") {
         editedAt = obj["editedAt"]?.takeIf {
             it != JsonNull
         }?.let { json.decodeFromJsonElement(InstantSerializer, it) },
-        attachments = obj["attachments"]?.takeIf { it != JsonNull }?.let { json.decodeFromJsonElement<List<Attachment>>(it) }
+        attachments =
+        obj["attachments"]?.takeIf { it != JsonNull }?.let { json.decodeFromJsonElement<List<Attachment>>(it) }
             ?: emptyList()
     )
 

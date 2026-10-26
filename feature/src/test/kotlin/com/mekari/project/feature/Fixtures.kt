@@ -33,7 +33,8 @@ internal suspend fun TestScope.workspaceScope(
 ): WorkspaceScope {
     fake.setWorkspace(workspaceId)
     val workspace = fake.me().workspaces.first { it.id == workspaceId }
-    val scope = WorkspaceScope(fake, workspace, me, backgroundScope, TestTime.clock, prefs, cooldown, uploads, slots, cache)
+    val scope =
+        WorkspaceScope(fake, workspace, me, backgroundScope, TestTime.clock, prefs, cooldown, uploads, slots, cache)
     uploads.onFinished = scope::attachmentUploaded
     return scope
 }

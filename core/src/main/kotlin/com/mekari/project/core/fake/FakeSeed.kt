@@ -430,7 +430,8 @@ private class DemoBuilder(private val today: LocalDate) {
         ): Attachment {
             val base = "/api/v1/attachments/$id"
             return Attachment(
-                id = id, workspaceId = mk, taskId = login, commentId = comment, kind = AttachmentKind.FILE, uploader = by,
+                id = id, workspaceId = mk, taskId = login, commentId = comment, kind = AttachmentKind.FILE,
+                uploader = by,
                 createdAt = at(minute), name = name, mimeType = mime, size = size, width = image?.first,
                 height = image?.second, hasThumbnail = image != null, contentPath = "$base/content",
                 thumbnailPath = if (image != null) "$base/thumbnail" else null
@@ -441,12 +442,22 @@ private class DemoBuilder(private val today: LocalDate) {
             file(DemoIds.ATTACHMENT_PDF, "SSO flow.pdf", "application/pdf", 182_004, alice, 44),
             file(DemoIds.ATTACHMENT_TEXT, "console.log", "text/plain", 2_310, bob, 45),
             Attachment(
-                id = DemoIds.ATTACHMENT_LINK, workspaceId = mk, taskId = login, kind = AttachmentKind.LINK, uploader = alice,
+                id = DemoIds.ATTACHMENT_LINK, workspaceId = mk, taskId = login, kind = AttachmentKind.LINK,
+                uploader = alice,
                 createdAt = at(46), url = "https://www.figma.com/file/demo/Login-flow", title = "Login flow",
                 description = "Sign-in and SSO screens", siteName = "Figma", provider = "figma",
                 previewStatus = LinkPreviewStatus.READY
             ),
-            file(DemoIds.ATTACHMENT_COMMENT_IMAGE, "returnTo.png", "image/png", 30_512, bob, 50, bobCommentId, 900 to 600)
+            file(
+                DemoIds.ATTACHMENT_COMMENT_IMAGE,
+                "returnTo.png",
+                "image/png",
+                30_512,
+                bob,
+                50,
+                bobCommentId,
+                900 to 600
+            )
         )
 
         fun notification(
