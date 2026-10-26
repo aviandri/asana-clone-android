@@ -43,6 +43,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -161,12 +162,38 @@ class AppContainer(private val context: Context) {
     /** After every wipe of the attachment cache (sign-out, lost workspace, start while signed out). */
     private val attachmentsWiped: () -> Unit = { Thumbnails.clear(thumbnailLoader) }
 
+    /**
+     * The session's own work (its coroutines and the follow* collectors). Production keeps one session for the
+     * process; instrumented tests replace it per test ([resetSessionForTests]), which cancels this.
+     */
+    private var sessionWork = SupervisorJob(appScope.coroutineContext[Job])
+    private val sessionScope: CoroutineScope get() = CoroutineScope(appScope.coroutineContext + sessionWork)
+    private var foregroundObserver: LifecycleEventObserver? = null
+
+    /**
+     * Instrumented tests share one process (and so this container): each test gets a fresh fake session instead
+     * of the previous test's state. Main thread only.
+     */
+    @VisibleForTesting
+    internal fun resetSessionForTests() {
+        foregroundObserver?.let { ProcessLifecycleOwner.get().lifecycle.removeObserver(it) }
+        foregroundObserver = null
+        sessionWork.cancel()
+        sessionWork = SupervisorJob(appScope.coroutineContext[Job])
+        currentSession = null
+        pendingLink.value = null
+        pendingTarget.value = null
+        linkNotice.value = null
+        pendingQuickAdd.value = false
+    }
+
     /** The one session. With the fake-API launch flag it runs on FakeApi + demo data (tests, device QA). */
     fun session(fakeApi: Boolean, signedIn: Boolean = true, fake: FakeApi? = null): AppSession {
         currentSession?.let { return it }
+        val work = sessionScope
         val session = if (fakeApi) {
             val api = fake ?: FakeApi(signedInAs = if (signedIn) "alice@example.com" else null)
-            AppSession.uiTest(signedIn, appScope, api, AttachmentCache(attachmentCacheDir), attachmentsWiped)
+            AppSession.uiTest(signedIn, work, api, AttachmentCache(attachmentCacheDir), attachmentsWiped)
         } else {
             val tokens = tokenStore.forSource("app") // first touch restores (and may keep a blob)
             retryKeptSession()
@@ -175,14 +202,14 @@ class AppContainer(private val context: Context) {
                 tokens,
                 { url, store -> LiveApi(url, store) },
                 featurePrefs,
-                appScope,
+                work,
                 attachmentCache = AttachmentCache(attachmentCacheDir),
                 onAttachmentsWiped = attachmentsWiped
             )
         }
         currentSession = session
         liveSession = !fakeApi
-        appScope.launch { session.start() }
+        work.launch { session.start() }
         followForeground(session)
         followLinks(session)
         followInboxBaseline(session)
@@ -190,7 +217,7 @@ class AppContainer(private val context: Context) {
         // Background inbox checks: live sessions only (the fake API never schedules WorkManager). Decided from
         // auth: Restoring (every cold start) changes nothing, so the periodic job isn't reset or dropped.
         if (!fakeApi) {
-            appScope.launch {
+            work.launch {
                 session.state.map { it.auth }
                     .filter { it !is Auth.Restoring }
                     .map { it is Auth.SignedIn }
@@ -203,7 +230,7 @@ class AppContainer(private val context: Context) {
 
     /** Links resolve here, outside any shell: once signed in, resolve (switching workspace if needed), then hand off. */
     private fun followLinks(session: AppSession) {
-        appScope.launch {
+        sessionScope.launch {
             pendingLink.filterNotNull().collect { link ->
                 pendingLink.value = null
                 session.state.first { it.auth is Auth.SignedIn }
@@ -220,7 +247,7 @@ class AppContainer(private val context: Context) {
      * the "seen" set for that user + workspace, so items already seen in the Inbox are never notified later.
      */
     private fun followInboxBaseline(session: AppSession) {
-        appScope.launch {
+        sessionScope.launch {
             session.scope.collectLatest { scope ->
                 scope ?: return@collectLatest
                 scope.inbox.state
@@ -241,7 +268,7 @@ class AppContainer(private val context: Context) {
      * on screen it looks just like a lost session.
      */
     private fun followKeptSession(session: AppSession) {
-        appScope.launch {
+        sessionScope.launch {
             session.state.map { (it.auth is Auth.SignedOut) to it.signInError }
                 .distinctUntilChanged()
                 .collect { (signedOut, error) ->
@@ -286,20 +313,20 @@ class AppContainer(private val context: Context) {
      */
     private fun followForeground(session: AppSession) {
         val lifecycle = ProcessLifecycleOwner.get().lifecycle
-        lifecycle.addObserver(
-            LifecycleEventObserver { _, event ->
-                val scope = session.scope.value ?: return@LifecycleEventObserver
-                when (event) {
-                    Lifecycle.Event.ON_START -> {
-                        scope.poller.start()
-                        appScope.launch { scope.refresh() }
-                    }
-                    Lifecycle.Event.ON_STOP -> scope.poller.stop()
-                    else -> Unit
+        val observer = LifecycleEventObserver { _, event ->
+            val scope = session.scope.value ?: return@LifecycleEventObserver
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    scope.poller.start()
+                    appScope.launch { scope.refresh() }
                 }
+                Lifecycle.Event.ON_STOP -> scope.poller.stop()
+                else -> Unit
             }
-        )
-        appScope.launch {
+        }
+        foregroundObserver = observer
+        lifecycle.addObserver(observer)
+        sessionScope.launch {
             session.scope.collect { scope ->
                 // The first load is the UI's (MainShell); here only the foreground poller.
                 if (scope != null && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) scope.poller.start()

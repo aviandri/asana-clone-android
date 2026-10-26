@@ -1,7 +1,6 @@
 package com.mekari.project
 
 import android.content.Intent
-import android.net.Uri
 import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.junit4.createEmptyComposeRule
@@ -13,6 +12,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.mekari.project.core.fake.DemoIds
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -29,16 +29,23 @@ class AttachmentFlowInstrumentedTest {
     private fun waitForTag(tag: String, timeoutMs: Long = 10_000) =
         compose.waitUntil(timeoutMs) { compose.onAllNodes(hasTestTag(tag)).fetchSemanticsNodes().isNotEmpty() }
 
-    /**
-     * Opens the task by its deep link: the instrumented tests share one fake session per process, and
-     * AddFieldFlowTest completes tasks from My Tasks, so the row may not be listed there any more.
-     */
+    @Before
+    fun freshSession() = freshFakeSession()
+
     private fun openTask(): ActivityScenario<MainActivity> {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse("mekariproject://task/${DemoIds.TASK_WITH_ATTACHMENTS}"))
-            .setClass(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
+        val intent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra(LaunchFlags.FAKE_API, true)
         val scenario = ActivityScenario.launch<MainActivity>(intent)
-        waitForTag(TestTags.TASK_DETAIL_LIST, timeoutMs = 20_000)
+        // On a phone the row can be below the fold of the lazy My Tasks list.
+        waitForTag(TestTags.MY_TASKS_LIST)
+        compose.waitUntil(10_000) {
+            runCatching {
+                compose.onNodeWithTag(TestTags.MY_TASKS_LIST)
+                    .performScrollToNode(hasTestTag(TestTags.taskRow(DemoIds.TASK_WITH_ATTACHMENTS)))
+            }.isSuccess
+        }
+        compose.onNodeWithTag(TestTags.taskRow(DemoIds.TASK_WITH_ATTACHMENTS)).performClick()
+        waitForTag(TestTags.TASK_DETAIL_LIST)
         return scenario
     }
 
