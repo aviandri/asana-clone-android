@@ -32,7 +32,14 @@ class AttachmentFlowInstrumentedTest {
         val intent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra(LaunchFlags.FAKE_API, true)
         val scenario = ActivityScenario.launch<MainActivity>(intent)
-        waitForTag(TestTags.taskRow(DemoIds.TASK_WITH_ATTACHMENTS))
+        // On a phone the row can be below the fold of the lazy My Tasks list.
+        waitForTag(TestTags.MY_TASKS_LIST)
+        compose.waitUntil(10_000) {
+            runCatching {
+                compose.onNodeWithTag(TestTags.MY_TASKS_LIST)
+                    .performScrollToNode(hasTestTag(TestTags.taskRow(DemoIds.TASK_WITH_ATTACHMENTS)))
+            }.isSuccess
+        }
         compose.onNodeWithTag(TestTags.taskRow(DemoIds.TASK_WITH_ATTACHMENTS)).performClick()
         waitForTag(TestTags.TASK_DETAIL_LIST)
         return scenario
