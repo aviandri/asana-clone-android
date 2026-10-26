@@ -31,10 +31,12 @@ sealed interface Story {
 data class Comment(
     override val id: String,
     val author: UserSummary,
-    /** Markdown; mentions in storage form `@[Name](userId)`. */
+    /** Markdown; mentions in storage form `@[Name](userId)`. May be empty when the comment has attachments. */
     val body: String,
     override val createdAt: Instant,
-    val editedAt: Instant? = null
+    val editedAt: Instant? = null,
+    /** Oldest first (BE §13); empty from servers before v1.3. */
+    val attachments: List<Attachment> = emptyList()
 ) : Story {
     override val key: String get() = "comment-$id"
 
@@ -78,7 +80,9 @@ internal object CommentSerializer : FlatSerializer<Comment>("Comment") {
         createdAt = json.decodeFromJsonElement(InstantSerializer, obj.require("createdAt")),
         editedAt = obj["editedAt"]?.takeIf {
             it != JsonNull
-        }?.let { json.decodeFromJsonElement(InstantSerializer, it) }
+        }?.let { json.decodeFromJsonElement(InstantSerializer, it) },
+        attachments = obj["attachments"]?.takeIf { it != JsonNull }?.let { json.decodeFromJsonElement<List<Attachment>>(it) }
+            ?: emptyList()
     )
 
     override fun write(json: Json, value: Comment) = buildJsonObject {
@@ -88,6 +92,7 @@ internal object CommentSerializer : FlatSerializer<Comment>("Comment") {
         put("body", value.body)
         put("createdAt", json.encodeToJsonElement(InstantSerializer, value.createdAt))
         put("editedAt", value.editedAt?.let { json.encodeToJsonElement(InstantSerializer, it) } ?: JsonNull)
+        put("attachments", json.encodeToJsonElement(value.attachments))
     }
 }
 

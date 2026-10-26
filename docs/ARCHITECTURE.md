@@ -638,3 +638,125 @@ class CompletionFeedback {
    its field if the text is unchanged. `addTask` waits for the server, because ids come
    from the BE: there are no temporary rows.
 5. **`TokenStore` and `ServerSettings` are synchronous.** The app's DataStore/Keystore implementations read once at launch and write through; OkHttp interceptors can't suspend.
+
+## 7. Attachments & links (v0.2: SPEC-ANDROID §8, BE SPEC §13 A1–A12)
+
+The :core/:feature part, the same shape as the Mac's (asana-clone-mac `docs/ARCHITECTURE.md` §7, reviewed in
+mac #37). `:app` adds the pickers (Photo Picker, OpenMultipleDocuments, TakePicture), Coil thumbnails, the
+viewers, FileProvider/ACTION_VIEW/Share/SAF and the chips. Nothing here imports Android.
+
+### :core
+
+```kotlin
+value class AttachmentKind(raw)          // FILE, LINK; open
+value class LinkPreviewStatus(raw)       // PENDING, READY, FAILED; open
+@Serializable data class Attachment(
+    id, workspaceId, taskId, commentId: String?, kind, draft, uploader: UserSummary, createdAt: Instant,
+    name, mimeType, size: Long?, width, height, hasThumbnail,                       // FILE
+    url, title, description, siteName, provider, previewStatus, hasIcon, hasImage,   // LINK
+    contentPath, thumbnailPath, iconPath, imagePath                                 // server-relative; never build them
+) {
+    val linkUrl: String?        // LINK url only when absolute http(s): anything else is never opened
+    val host: String?           // without "www."
+    val displayName: String     // FILE name; LINK title, else host, else url
+    val isImage: Boolean
+    fun thumbnailPath(size: ThumbnailSize): String?   // ?size=small|large, null without a thumbnail
+}
+object AttachmentLimits { MAX_UPLOAD_BYTES = 104_857_600; MAX_PER_COMMENT = 20; MAX_CONCURRENT_UPLOADS = 3; fun tooLarge() }
+data class TransferProgress(completed: Long, total: Long?) { val fraction: Float? }
+sealed interface DownloadOutcome { NotModified; Downloaded(etag) }
+
+/** What an upload streams from: the app wraps a content:// Uri (ContentResolver + OpenableColumns). */
+interface UploadSource { val name: String; val size: Long?; fun open(): InputStream; fun delete() {} }
+class FileUploadSource(file, name = file.name, owned = false) : UploadSource   // tests, camera captures
+
+// MekariApi additions
+suspend fun uploadAttachment(taskId, source: UploadSource, draft: Boolean, progress: (TransferProgress) -> Unit = {}): Attachment
+suspend fun addLink(taskId, url, title: String?, draft: Boolean): Attachment
+suspend fun attachment(id): Attachment
+suspend fun refreshLinkPreview(id): Attachment
+suspend fun deleteAttachment(id)
+suspend fun addComment(taskId, body, attachmentIds: List<String> = emptyList()): Comment
+suspend fun download(path, destination: File, etag: String? = null, progress = {}): DownloadOutcome
+suspend fun attachmentData(path): ByteArray
+
+class AttachmentCache(directory: File, capacity = 500 MB, io = Dispatchers.IO) {   // app: cacheDir/attachments
+    suspend fun file(attachment, api, progress = {}): File        // <dir>/<id>/<sanitised name>; ETag; offline → cached
+    suspend fun cachedFile(attachmentId): File?
+    suspend fun cancelDownload(attachmentId)                       // for every caller
+    suspend fun wipe()
+    suspend fun diskUsage(): Long
+    companion object { fun scratch(): AttachmentCache }            // a temp folder (previews, tests)
+}
+```
+
+- `TaskItem.attachmentCount`, `TaskDetail.attachments` (newest first), `Comment.attachments` (oldest first) default
+  for older servers; a comment's body may be empty when it has attachments. `ActivityType.ATTACHMENT_ADDED/REMOVED`.
+- `ApiError.Code.PAYLOAD_TOO_LARGE` (413, or the local pre-check with `status == null`) and `INSUFFICIENT_STORAGE`
+  (507); 429 is `RATE_LIMITED`. A non-JSON 413/429/507 (a proxy page) maps by status.
+- **LiveApi:** the upload is a one-shot multipart body streamed from `UploadSource.open()` in 64 KiB pieces; a
+  stream longer than 100 MB is stopped (PAYLOAD_TOO_LARGE). OkHttp writes `filename="…"` as UTF-8 with browser
+  escaping (the BE ignores `filename*`). Uploads and downloads use a 300 s read/write timeout and are never retried
+  by OkHttp. Downloads stream to `.<uuid>.part` next to the destination and move into place on a complete 200.
+  Byte GETs are ID-addressed (no `X-Workspace-Id`), carry the cookie, never follow redirects, and accept only
+  `/api/v1/attachments/…` paths.
+- **AttachmentCache safety:** only UUID ids name folders; every delete is checked to sit inside `directory`; index
+  entries that don't name a UUID folder and a plain file name are dropped; `.part` leftovers are removed.
+- **FakeApi:** the same seeded attachments as the Mac (`DemoIds.TASK_WITH_ATTACHMENTS`, `ATTACHMENT_*`), the BE
+  rules (drafts, commenters, A7 deletes, empty comment deleted with its last attachment), `currentAttachments()`,
+  `failNextUploadAfterBody(error)`, `addCommentDirectly(...)`.
+
+### :feature
+
+```kotlin
+data class AttachmentUpload(id, taskId, source: Source, state: State, size: Long?, deletesSource: Boolean) {
+    sealed interface Source { File(source: UploadSource); Link(url, title) }
+    sealed interface State { Queued; Uploading(progress); Finishing; Finished(attachment); Failed(error) }
+    val name; val isActive; val isFinishing; val isFinished; val isFailed; val attachment: Attachment?
+}
+sealed interface LinkResult { Added; NoRoom; Failed(error) }       // for the Add link sheet
+
+class AttachmentUploads {                 // AppSession.uploads: session-scoped, keyed by task
+    val state: StateFlow<List<AttachmentUpload>>
+    fun uploads(taskId): List<AttachmentUpload>
+    fun retry(id); fun cancel(id): Boolean                            // false while finishing
+}
+
+// TaskDetailStore.State additions: attachments, uploads, canAttach
+fun canDelete(attachment): Boolean                                    // uploader, project OWNER, workspace ADMIN; personal: + creator
+fun attach(source: UploadSource, deletesSource: Boolean = false)      // task-level; survives leaving the task
+suspend fun addLink(url, title): LinkResult
+fun retryUpload(id); fun cancelUpload(id): Boolean
+suspend fun deleteAttachment(id)                                      // optimistic; restores + lastError on refusal
+suspend fun refreshLinkPreview(id)
+
+// CommentComposer.State additions: attachments (chips), sendingIds, isUploading, hasRoomForAnother
+fun canSend(text): Boolean                // text or ≥ 1 finished chip; nothing active; failed chips don't block
+suspend fun send(body): Boolean           // posts finished chips as attachmentIds; drops them and failed ones on success
+fun attach(source, deletesSource = false): Boolean                    // false = no room (20)
+suspend fun attachLink(url, title): LinkResult                        // a failed link leaves no chip
+fun retry(id); suspend fun remove(id): Boolean                       // false while finishing or being posted
+suspend fun discard()                     // the UI calls it when the user leaves the task (not on rotation)
+
+class AttachmentFiles {                   // WorkspaceScope.attachmentFiles
+    val state: StateFlow<State(downloads: Map<id, TransferProgress>, lastError)>
+    suspend fun file(attachment, revalidate = true): File?           // revalidate = false: a cached copy at once
+    suspend fun cancelDownload(attachmentId)
+    suspend fun cachedFile(attachment): File?
+}
+
+// AppSession(..., attachmentCache: AttachmentCache = AttachmentCache.scratch(), onAttachmentsWiped: () -> Unit = {})
+//   the app passes AttachmentCache(cacheDir/attachments) and clears Coil's memory + disk caches in onAttachmentsWiped
+```
+
+- **Shared slots:** uploads, links and preview refreshes take one of 3 slots app-wide (the BE counts them all). A
+  429 is retried once after 1.5 s, but not when the whole body was already sent (the BE's draft-quota check).
+- **Finishing:** once the body is sent, cancel/remove refuse (it lands anyway). `discard()` lets a finishing chip
+  land, then deletes its draft; chips being posted are left to the send.
+- **After a failed send**, discarded drafts are deleted only on a 4xx; after a transport error or a 5xx the client
+  first checks the attachment is still an unposted draft.
+- **Wipe rules:** sign-out (including a 401) cancels uploads and wipes the cache (awaited by `signOut()`); starting
+  signed out wipes; losing a workspace cancels its uploads and wipes before `/auth/me`. A closed scope cancels its
+  composer uploads (drafts are swept server-side after 24 h).
+- Deleting a comment removes its attachments from the task; a comment with attachments may be edited to an empty body (A9).
+- Process death drops in-flight uploads (the user retries), per SPEC-ANDROID §8.

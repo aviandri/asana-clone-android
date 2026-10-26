@@ -1,11 +1,13 @@
 package com.mekari.project.feature
 
+import com.mekari.project.core.Attachment
 import com.mekari.project.core.MekariApi
 import com.mekari.project.core.Patch
 import com.mekari.project.core.TaskChanges
 import com.mekari.project.core.TaskDetail
 import com.mekari.project.core.TaskItem
 import com.mekari.project.core.UserSummary
+import java.time.Instant
 import kotlin.time.Duration
 import kotlin.time.Duration.Companion.milliseconds
 import kotlinx.coroutines.CancellationException
@@ -102,6 +104,30 @@ class TaskCache internal constructor(
         confirmedDetails[detail.id] = detail.copy(subtasks = detail.subtasks.filter { it.id !in deleted })
         detail.task.parentId?.let { touched += it }
         touched.forEach(::recompute)
+        publish()
+    }
+
+    /**
+     * Changes a loaded task's attachments locally (after an upload, a posted comment or a delete) and keeps
+     * `attachmentCount` in step. [bumpedAt] (a task-level add's time) moves `updatedAt` forward like the server
+     * does, so a load that started before the change can't take it back.
+     */
+    fun editAttachments(id: String, bumpedAt: Instant? = null, change: (List<Attachment>) -> List<Attachment>) {
+        val detail = confirmedDetails[id]
+        if (detail == null) {
+            val item = confirmed[id] ?: return
+            val added = change(emptyList()).size
+            confirmed[id] = item.copy(attachmentCount = maxOf(0, item.attachmentCount + added))
+            recompute(id)
+            publish()
+            return
+        }
+        val list = change(detail.attachments).sortedByDescending { it.createdAt }
+        var task = detail.task.copy(attachmentCount = maxOf(0, detail.task.attachmentCount + list.size - detail.attachments.size))
+        if (bumpedAt != null && bumpedAt > task.updatedAt) task = task.copy(updatedAt = bumpedAt)
+        confirmedDetails[id] = detail.copy(task = task, attachments = list)
+        confirmed[id]?.let { confirmed[id] = it.copy(attachmentCount = task.attachmentCount, updatedAt = maxOf(it.updatedAt, task.updatedAt)) }
+        recompute(id)
         publish()
     }
 

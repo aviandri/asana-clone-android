@@ -70,5 +70,9 @@ internal class Listeners {
         listeners += listener
     }
 
+    fun remove(listener: () -> Unit) {
+        listeners -= listener
+    }
+
     fun fire() = listeners.toList().forEach { it() }
 }

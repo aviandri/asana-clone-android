@@ -2,8 +2,11 @@ package com.mekari.project.core.fake
 
 import com.mekari.project.core.Activity
 import com.mekari.project.core.ActivityType
+import com.mekari.project.core.Attachment
+import com.mekari.project.core.AttachmentKind
 import com.mekari.project.core.Comment
 import com.mekari.project.core.InboxNotification
+import com.mekari.project.core.LinkPreviewStatus
 import com.mekari.project.core.Mentions
 import com.mekari.project.core.NotificationTaskRef
 import com.mekari.project.core.NotificationType
@@ -54,6 +57,17 @@ object DemoIds {
     /** "Fix login redirect" in Mobile App v2: a comment that mentions bob, 2 subtasks, followers. */
     const val TASK_WITH_STORIES = "50000000-0000-4000-8000-000000000001"
 
+    /**
+     * The task with the seeded attachments (BE §13 seed): a PNG, a PDF, a text file and a LINK, plus an image on
+     * bob's comment. Same task as [TASK_WITH_STORIES]; same ids as the Mac's DemoIDs.
+     */
+    const val TASK_WITH_ATTACHMENTS = TASK_WITH_STORIES
+    const val ATTACHMENT_PNG = "a0000000-0000-4000-8000-000000000001"
+    const val ATTACHMENT_PDF = "a0000000-0000-4000-8000-000000000002"
+    const val ATTACHMENT_TEXT = "a0000000-0000-4000-8000-000000000003"
+    const val ATTACHMENT_LINK = "a0000000-0000-4000-8000-000000000004"
+    const val ATTACHMENT_COMMENT_IMAGE = "a0000000-0000-4000-8000-000000000005"
+
     const val GUEST_EMAIL = "guest@partner.test"
     const val PASSWORD = "password123"
 }
@@ -70,7 +84,9 @@ data class FakeSeed(
     val tasks: List<TaskItem>,
     val followers: Map<String, List<String>>,
     val stories: Map<String, List<Story>>,
-    val notifications: List<NotificationRecord>
+    val notifications: List<NotificationRecord>,
+    /** Every attachment, drafts and comment ones included; comments get theirs when the fake renders them. */
+    val attachments: List<Attachment> = emptyList()
 ) {
     data class UserRecord(val summary: UserSummary, val password: String, val isActive: Boolean, val createdAt: Instant)
     data class Membership(
@@ -378,24 +394,59 @@ private class DemoBuilder(private val today: LocalDate) {
 
         followers[login] = listOf(DemoIds.ADMIN, DemoIds.ALICE, DemoIds.BOB)
 
+        val createdId = nextId("70000000")
+        val assignedId = nextId("70000000")
+        val mentionCommentId = nextId("80000000")
+        val bobCommentId = nextId("80000000")
         val stories: Map<String, List<Story>> = mapOf(
             login to listOf(
-                Activity(nextId("70000000"), admin, ActivityType.CREATED, createdAt = at(40)),
+                Activity(createdId, admin, ActivityType.CREATED, createdAt = at(40)),
                 Activity(
-                    nextId("70000000"),
+                    assignedId,
                     admin,
                     ActivityType.ASSIGNED,
                     data = buildJsonObject { put("assigneeId", JsonPrimitive(alice.id)) },
                     createdAt = at(41)
                 ),
                 Comment(
-                    nextId("80000000"),
+                    mentionCommentId,
                     admin,
                     "Seen on staging too. ${Mentions.token(bob)} can you check the SSO callback?",
                     at(42)
                 ),
-                Comment(nextId("80000000"), bob, "On it, the `returnTo` param is dropped.", at(50))
+                Comment(bobCommentId, bob, "On it, the `returnTo` param is dropped.", at(50))
             )
+        )
+
+        fun file(
+            id: String,
+            name: String,
+            mime: String,
+            size: Long,
+            by: UserSummary,
+            minute: Int,
+            comment: String? = null,
+            image: Pair<Int, Int>? = null
+        ): Attachment {
+            val base = "/api/v1/attachments/$id"
+            return Attachment(
+                id = id, workspaceId = mk, taskId = login, commentId = comment, kind = AttachmentKind.FILE, uploader = by,
+                createdAt = at(minute), name = name, mimeType = mime, size = size, width = image?.first,
+                height = image?.second, hasThumbnail = image != null, contentPath = "$base/content",
+                thumbnailPath = if (image != null) "$base/thumbnail" else null
+            )
+        }
+        val attachments = listOf(
+            file(DemoIds.ATTACHMENT_PNG, "login-redirect.png", "image/png", 48_213, admin, 43, image = 1280 to 800),
+            file(DemoIds.ATTACHMENT_PDF, "SSO flow.pdf", "application/pdf", 182_004, alice, 44),
+            file(DemoIds.ATTACHMENT_TEXT, "console.log", "text/plain", 2_310, bob, 45),
+            Attachment(
+                id = DemoIds.ATTACHMENT_LINK, workspaceId = mk, taskId = login, kind = AttachmentKind.LINK, uploader = alice,
+                createdAt = at(46), url = "https://www.figma.com/file/demo/Login-flow", title = "Login flow",
+                description = "Sign-in and SSO screens", siteName = "Figma", provider = "figma",
+                previewStatus = LinkPreviewStatus.READY
+            ),
+            file(DemoIds.ATTACHMENT_COMMENT_IMAGE, "returnTo.png", "image/png", 30_512, bob, 50, bobCommentId, 900 to 600)
         )
 
         fun notification(
@@ -439,7 +490,8 @@ private class DemoBuilder(private val today: LocalDate) {
         )
 
         return FakeSeed(
-            users, workspaces, memberships, teams, projects, tasks.toList(), followers.toMap(), stories, notifications
+            users, workspaces, memberships, teams, projects, tasks.toList(), followers.toMap(), stories, notifications,
+            attachments
         )
     }
 

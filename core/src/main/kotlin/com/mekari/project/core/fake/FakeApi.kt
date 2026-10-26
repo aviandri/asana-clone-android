@@ -3,6 +3,14 @@ package com.mekari.project.core.fake
 import com.mekari.project.core.Activity
 import com.mekari.project.core.ActivityType
 import com.mekari.project.core.ApiError
+import com.mekari.project.core.UploadSource
+import com.mekari.project.core.TransferProgress
+import com.mekari.project.core.LinkPreviewStatus
+import com.mekari.project.core.DownloadOutcome
+import com.mekari.project.core.AttachmentLinks
+import com.mekari.project.core.AttachmentLimits
+import com.mekari.project.core.AttachmentKind
+import com.mekari.project.core.Attachment
 import com.mekari.project.core.ApiEvent
 import com.mekari.project.core.Comment
 import com.mekari.project.core.FieldIssue
@@ -77,7 +85,14 @@ enum class FakeEndpoint {
     NOTIFICATIONS,
     MARK_READ,
     MARK_ALL_READ,
-    SEARCH
+    SEARCH,
+    UPLOAD_ATTACHMENT,
+    ADD_LINK,
+    ATTACHMENT,
+    REFRESH_LINK_PREVIEW,
+    DELETE_ATTACHMENT,
+    DOWNLOAD,
+    ATTACHMENT_DATA
 }
 
 /** A recorded request: the endpoint and the workspace header in effect (null for unscoped endpoints). */
@@ -93,6 +108,12 @@ data class FakeCall(val endpoint: FakeEndpoint, val workspaceId: String?)
  * outside it.
  */
 class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@example.com") : MekariApi {
+    companion object {
+        /** Every image path serves this 1×1 PNG (the fake has no real files). */
+        val PNG_BYTES: ByteArray = java.util.Base64.getDecoder()
+            .decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==")
+    }
+
     private val lock = Any()
     private val users = seed.users.toMutableList()
     private val workspaces = seed.workspaces.toMutableList()
@@ -103,6 +124,9 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
     private val followers = seed.followers.mapValues { it.value.toMutableList() }.toMutableMap()
     private val stories = seed.stories.mapValues { it.value.toMutableList() }.toMutableMap()
     private val notifications = seed.notifications.toMutableList()
+    private val attachments = seed.attachments.toMutableList()
+    private val blobs = mutableMapOf<String, ByteArray>()
+    private val afterBodyFailures = ArrayDeque<ApiError>()
     private val lastWorkspace = mutableMapOf<String, String>()
     private var currentUserId: String? = signedInAs?.let { email ->
         users.firstOrNull {
@@ -172,6 +196,27 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
     }
 
     fun currentTasks(): List<TaskItem> = synchronized(lock) { tasks.map(::render) }
+
+    /** Every attachment in the fake (drafts included), for assertions. */
+    fun currentAttachments(): List<Attachment> = synchronized(lock) { attachments.toList() }
+
+    /**
+     * The next upload receives its whole body (progress reaches the total), then fails with [error]: the BE's
+     * second draft-quota check (429), or a proxy error after the upload.
+     */
+    fun failNextUploadAfterBody(error: ApiError) = synchronized(lock) { afterBodyFailures.addLast(error) }
+
+    /**
+     * Posts drafts as a comment by the signed-in user without going through the gate (no hold, no failNext): the
+     * server committing a request whose answer is then lost.
+     */
+    fun addCommentDirectly(taskId: String, attachmentIds: List<String>, body: String = ""): Comment = synchronized(lock) {
+        val user = requireUser()
+        val comment = Comment(newId(), summary(user)!!, body, Instant.now())
+        attachments.replaceAll { if (it.id in attachmentIds) it.copy(draft = false, commentId = comment.id) else it }
+        stories.getOrPut(taskId) { mutableListOf() } += comment
+        render(comment)
+    }
 
     // Session
 
@@ -499,24 +544,32 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
 
     override suspend fun stories(taskId: String): List<Story> = gate(FakeEndpoint.STORIES, scoped = false) {
         visibleTask(taskId)
-        stories[taskId].orEmpty().sortedBy { it.createdAt }
+        stories[taskId].orEmpty().sortedBy { it.createdAt }.map { if (it is Comment) render(it) else it }
     }
 
-    override suspend fun addComment(taskId: String, body: String): Comment =
+    override suspend fun addComment(taskId: String, body: String, attachmentIds: List<String>): Comment =
         gate(FakeEndpoint.ADD_COMMENT, scoped = false) {
             val user = requireUser()
             val (task, _) = visibleTask(taskId)
-            val comment = Comment(newId(), summary(user)!!, nonEmpty(body, "body"), Instant.now())
+            if (attachmentIds.size > AttachmentLimits.MAX_PER_COMMENT) throw validation("attachmentIds", "At most 20 attachments")
+            val ids = attachmentIds.toSet()
+            // BE: each must be a draft I uploaded on this task.
+            if (!ids.all { id -> attachments.any { it.id == id && it.draft && it.uploader.id == user && it.taskId == taskId } }) {
+                throw validation("attachmentIds", "Attachments must be your drafts on this task")
+            }
+            val text = if (ids.isEmpty()) nonEmpty(body, "body") else body.trim()
+            val comment = Comment(newId(), summary(user)!!, text, Instant.now())
             val mentioned = comment.segments.filterIsInstance<Mentions.Segment.Mention>().map { it.userId }
             // BE: only members of the task's workspace can be mentioned.
             if (mentioned.any { activeMembership(it, task.workspaceId) == null }) {
                 throw validation("body", "Only members of this workspace can be mentioned")
             }
+            attachments.replaceAll { if (it.id in ids) it.copy(draft = false, commentId = comment.id) else it }
             stories.getOrPut(taskId) { mutableListOf() } += comment
             notify(mentioned, NotificationType.MENTIONED, user, task)
             notify(followers[taskId].orEmpty().filter { it !in mentioned }, NotificationType.COMMENTED, user, task)
             followers[taskId] = (followers[taskId].orEmpty() + user).toSortedSet().toMutableList()
-            comment
+            render(comment)
         }
 
     override suspend fun editComment(id: String, body: String): Comment =
@@ -528,9 +581,12 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
             ) {
                 throw ApiError(ApiError.Code.FORBIDDEN, 403, "Only the author can edit a comment")
             }
-            val edited = comment.copy(body = nonEmpty(body, "body"), editedAt = Instant.now())
+            // A9: the body may be empty when the comment has attachments.
+            val hasAttachments = attachments.any { it.commentId == id }
+            val text = if (hasAttachments) body.trim() else nonEmpty(body, "body")
+            val edited = comment.copy(body = text, editedAt = Instant.now())
             stories[taskId]?.replaceAll { if (it is Comment && it.id == id) edited else it }
-            edited
+            render(edited)
         }
 
     override suspend fun deleteComment(id: String) = gate(FakeEndpoint.DELETE_COMMENT, scoped = false) {
@@ -542,6 +598,7 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
             throw ApiError(ApiError.Code.FORBIDDEN, 403, "Only the author or an admin can delete a comment")
         }
         stories[taskId]?.removeAll { it is Comment && it.id == id }
+        attachments.removeAll { it.commentId == id }
         Unit
     }
 
@@ -600,6 +657,193 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
             visible.filter { it.project.name.lowercase().contains(q) }.take(10).map { render(it, user) },
             people.take(10).map { it.user }
         )
+    }
+
+    // Attachments & links
+
+    override suspend fun uploadAttachment(
+        taskId: String,
+        source: UploadSource,
+        draft: Boolean,
+        progress: (TransferProgress) -> Unit
+    ): Attachment {
+        val declared = source.size
+        if (declared != null && declared > AttachmentLimits.MAX_UPLOAD_BYTES) throw AttachmentLimits.tooLarge()
+        // Read outside the lock (the gate's body runs under it).
+        val (size, kept) = try {
+            source.open().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                val head = java.io.ByteArrayOutputStream()
+                var total = 0L
+                while (true) {
+                    val read = input.read(buffer)
+                    if (read < 0) break
+                    total += read
+                    if (total > AttachmentLimits.MAX_UPLOAD_BYTES) throw AttachmentLimits.tooLarge()
+                    if (total <= 1 shl 20) head.write(buffer, 0, read)
+                }
+                total to head.toByteArray().takeIf { total <= 1 shl 20 }
+            }
+        } catch (e: ApiError) {
+            throw e
+        } catch (_: java.io.IOException) {
+            throw validation("file", "Can't read that file")
+        }
+        val user = gate(FakeEndpoint.UPLOAD_ATTACHMENT, scoped = false) {
+            val user = requireUser()
+            val (task, _) = visibleTask(taskId)
+            if (!draft) requireEditTask(task, user)
+            user
+        }
+        progress(TransferProgress(0, size))
+        synchronized(lock) { afterBodyFailures.removeFirstOrNull() }?.let {
+            progress(TransferProgress(size, size))
+            throw it
+        }
+        val attachment = synchronized(lock) {
+            val task = tasks.first { it.id == taskId }
+            val name = AttachmentLinks.safeFileName(source.name)
+            val mime = mimeType(name)
+            val id = newId()
+            val isImage = mime.startsWith("image/")
+            val base = "/api/v1/attachments/$id"
+            val created = Attachment(
+                id = id, workspaceId = task.workspaceId, taskId = taskId, kind = AttachmentKind.FILE, draft = draft,
+                uploader = summary(user)!!, createdAt = Instant.now(), name = name, mimeType = mime, size = size,
+                width = if (isImage) 1 else null, height = if (isImage) 1 else null, hasThumbnail = isImage,
+                contentPath = "$base/content", thumbnailPath = if (isImage) "$base/thumbnail" else null
+            )
+            kept?.let { blobs[id] = it }
+            attachments += created
+            if (!draft) taskLevelAdded(created, user)
+            created
+        }
+        progress(TransferProgress(size, size))
+        return attachment
+    }
+
+    override suspend fun addLink(taskId: String, url: String, title: String?, draft: Boolean): Attachment =
+        gate(FakeEndpoint.ADD_LINK, scoped = false) {
+            val user = requireUser()
+            val (task, _) = visibleTask(taskId)
+            if (!draft) requireEditTask(task, user)
+            if (!AttachmentLinks.isValidLink(url)) throw validation("url", "Enter an http(s) link")
+            val clean = url.trim()
+            val host = java.net.URI(clean).host.lowercase()
+            val created = Attachment(
+                id = newId(), workspaceId = task.workspaceId, taskId = taskId, kind = AttachmentKind.LINK, draft = draft,
+                uploader = summary(user)!!, createdAt = Instant.now(), url = clean,
+                title = title?.trim()?.takeIf { it.isNotEmpty() } ?: host, siteName = host,
+                provider = if ("figma.com" in host) "figma" else null, previewStatus = LinkPreviewStatus.READY
+            )
+            attachments += created
+            if (!draft) taskLevelAdded(created, user)
+            created
+        }
+
+    override suspend fun attachment(id: String): Attachment =
+        gate(FakeEndpoint.ATTACHMENT, scoped = false) { visibleAttachment(id) }
+
+    override suspend fun refreshLinkPreview(id: String): Attachment =
+        gate(FakeEndpoint.REFRESH_LINK_PREVIEW, scoped = false) {
+            visibleAttachment(id).also { if (it.kind != AttachmentKind.LINK) throw validation("id", "Not a link") }
+        }
+
+    override suspend fun deleteAttachment(id: String) = gate(FakeEndpoint.DELETE_ATTACHMENT, scoped = false) {
+        val user = requireUser()
+        val attachment = visibleAttachment(id)
+        val task = tasks.firstOrNull { it.id == attachment.taskId } ?: throw notFound("Attachment")
+        val isAdmin = activeMembership(user, task.workspaceId)?.role == WorkspaceRole.ADMIN
+        val allowed = if (task.projectId != null) {
+            val owner = projects.firstOrNull { it.project.id == task.projectId }
+                ?.members?.firstOrNull { it.user.id == user }?.role == ProjectRole.OWNER
+            attachment.uploader.id == user || owner || isAdmin
+        } else {
+            attachment.uploader.id == user || task.creator.id == user || isAdmin // A7
+        }
+        if (!allowed) throw ApiError(ApiError.Code.FORBIDDEN, 403, "You can't delete this attachment")
+        attachments.removeAll { it.id == id }
+        blobs.remove(id)
+        val commentId = attachment.commentId
+        if (commentId != null) {
+            // A comment that was only this attachment goes with it.
+            val comment = stories[task.id]?.firstOrNull { it is Comment && it.id == commentId } as? Comment
+            if (comment != null && comment.body.isEmpty() && attachments.none { it.commentId == commentId }) {
+                stories[task.id]?.removeAll { it is Comment && it.id == commentId }
+            }
+        } else if (!attachment.draft) {
+            appendActivity(
+                task.id,
+                user,
+                ActivityType.ATTACHMENT_REMOVED,
+                buildJsonObject {
+                    put("kind", JsonPrimitive(attachment.kind.raw))
+                    put("name", JsonPrimitive(attachment.displayName))
+                }
+            )
+        }
+        Unit
+    }
+
+    override suspend fun download(
+        path: String,
+        destination: java.io.File,
+        etag: String?,
+        progress: (TransferProgress) -> Unit
+    ): DownloadOutcome {
+        val (attachment, data) = gate(FakeEndpoint.DOWNLOAD, scoped = false) { bytes(path) }
+        val current = "\"fake-${attachment.id}\""
+        if (etag == current) return DownloadOutcome.NotModified
+        destination.absoluteFile.parentFile?.mkdirs()
+        destination.writeBytes(data)
+        progress(TransferProgress(data.size.toLong(), data.size.toLong()))
+        return DownloadOutcome.Downloaded(current)
+    }
+
+    override suspend fun attachmentData(path: String): ByteArray =
+        gate(FakeEndpoint.ATTACHMENT_DATA, scoped = false) { bytes(path).second }
+
+    private fun bytes(path: String): Pair<Attachment, ByteArray> {
+        if (!AttachmentLinks.isAttachmentPath(path)) throw ApiError(ApiError.Code.VALIDATION, null, "Not an attachment address")
+        val rest = path.removePrefix(AttachmentLinks.PATH_PREFIX)
+        val id = rest.takeWhile { it != '/' && it != '?' }
+        val what = rest.removePrefix(id).substringBefore('?')
+        val attachment = visibleAttachment(id)
+        return attachment to when {
+            what == "/content" -> blobs[id] ?: if (attachment.isImage) PNG_BYTES else (attachment.name ?: "file").toByteArray()
+            what == "/thumbnail" && attachment.hasThumbnail -> PNG_BYTES
+            what == "/icon" && attachment.hasIcon -> PNG_BYTES
+            what == "/image" && attachment.hasImage -> PNG_BYTES
+            else -> throw notFound("Attachment")
+        }
+    }
+
+    /** Visible iff I can see the task; drafts only to their uploader (BE §13). */
+    private fun visibleAttachment(id: String): Attachment {
+        val user = requireUser()
+        val attachment = attachments.firstOrNull { it.id == id } ?: throw notFound("Attachment")
+        if (attachment.draft && attachment.uploader.id != user) throw notFound("Attachment")
+        try {
+            visibleTask(attachment.taskId)
+        } catch (_: ApiError) {
+            throw notFound("Attachment")
+        }
+        return attachment
+    }
+
+    private fun taskLevelAdded(attachment: Attachment, user: String) {
+        appendActivity(
+            attachment.taskId,
+            user,
+            ActivityType.ATTACHMENT_ADDED,
+            buildJsonObject {
+                put("attachmentId", JsonPrimitive(attachment.id))
+                put("kind", JsonPrimitive(attachment.kind.raw))
+                put("name", JsonPrimitive(attachment.displayName))
+            }
+        )
+        val i = tasks.indexOfFirst { it.id == attachment.taskId }
+        if (i >= 0) tasks[i] = tasks[i].copy(updatedAt = Instant.now())
     }
 
     // Rules
@@ -783,6 +1027,7 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
             subtaskCount = subtasks.size,
             completedSubtaskCount = subtasks.count { it.completed },
             commentCount = stories[task.id].orEmpty().count { it is Comment },
+            attachmentCount = attachments.count { it.taskId == task.id && !it.draft },
             project = task.projectId?.let { id -> projects.firstOrNull { it.project.id == id }?.project?.ref }
         )
     }
@@ -793,9 +1038,14 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
             render(current),
             followers[task.id].orEmpty().mapNotNull(::summary).sortedBy { it.name },
             tasks.filter { it.parentId == task.id }.sortedBy { it.position }.map(::render),
-            current.parentId?.let { id -> tasks.firstOrNull { it.id == id } }?.let { TaskParentRef(it.id, it.title) }
+            current.parentId?.let { id -> tasks.firstOrNull { it.id == id } }?.let { TaskParentRef(it.id, it.title) },
+            attachments.filter { it.taskId == task.id && !it.draft }.sortedByDescending { it.createdAt }
         )
     }
+
+    private fun render(comment: Comment): Comment = comment.copy(
+        attachments = attachments.filter { it.commentId == comment.id && !it.draft }.sortedBy { it.createdAt }
+    )
 
     private fun summary(id: String): UserSummary? = users.firstOrNull { it.summary.id == id }?.summary
 
@@ -841,6 +1091,17 @@ class FakeApi(seed: FakeSeed = FakeSeed.demo(), signedInAs: String? = "alice@exa
     }
 
     private fun newId() = UUID.randomUUID().toString()
+
+    private fun mimeType(name: String): String = when (name.substringAfterLast('.', "").lowercase()) {
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        "gif" -> "image/gif"
+        "webp" -> "image/webp"
+        "pdf" -> "application/pdf"
+        "txt", "md", "csv", "json", "log" -> "text/plain"
+        "mp4" -> "video/mp4"
+        else -> "application/octet-stream"
+    }
 
     private fun notFound(what: String) = ApiError(ApiError.Code.NOT_FOUND, 404, "$what not found")
 

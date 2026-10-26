@@ -32,6 +32,12 @@ class ApiError(
             val RATE_LIMITED = Code("RATE_LIMITED")
             val INTERNAL = Code("INTERNAL")
 
+            /** 413 (over 100 MB), or the client's own pre-check (then `status` is null). */
+            val PAYLOAD_TOO_LARGE = Code("PAYLOAD_TOO_LARGE")
+
+            /** 507: the server is out of space for attachments (A12). */
+            val INSUFFICIENT_STORAGE = Code("INSUFFICIENT_STORAGE")
+
             /** No HTTP response: offline, DNS, TLS, timeout. */
             val TRANSPORT = Code("TRANSPORT")
 
@@ -67,7 +73,13 @@ class ApiError(
             val code = (error?.get("code") as? JsonPrimitive)?.takeIf { it.isString }?.content
             val message = (error?.get("message") as? JsonPrimitive)?.takeIf { it.isString }?.content
             if (code == null || message == null) {
-                return ApiError(Code("HTTP $status"), status, "The server returned an error (HTTP $status)")
+                // A proxy's HTML page (nginx 413, a gateway's 429/507) still means the same thing.
+                return when (status) {
+                    413 -> ApiError(Code.PAYLOAD_TOO_LARGE, status, "The file is too large for the server (HTTP 413)")
+                    429 -> ApiError(Code.RATE_LIMITED, status, "Too many requests. Try again in a moment.")
+                    507 -> ApiError(Code.INSUFFICIENT_STORAGE, status, "The server is out of space (HTTP 507)")
+                    else -> ApiError(Code("HTTP $status"), status, "The server returned an error (HTTP $status)")
+                }
             }
             return ApiError(Code(code), status, message, issues(error["details"]))
         }

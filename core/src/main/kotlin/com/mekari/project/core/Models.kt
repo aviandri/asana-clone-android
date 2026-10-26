@@ -167,6 +167,8 @@ data class TaskItem(
     val subtaskCount: Int = 0,
     val completedSubtaskCount: Int = 0,
     val commentCount: Int = 0,
+    /** Non-draft attachments on the task and its comments (BE §13); 0 from servers before v1.3. */
+    val attachmentCount: Int = 0,
     val project: ProjectRef? = null,
     val createdAt: Instant,
     val updatedAt: Instant
@@ -181,7 +183,9 @@ data class TaskDetail(
     val task: TaskItem,
     val followers: List<UserSummary> = emptyList(),
     val subtasks: List<TaskItem> = emptyList(),
-    val parent: TaskParentRef? = null
+    val parent: TaskParentRef? = null,
+    /** Task-level and comment attachments, newest first (BE §13); empty from servers before v1.3. */
+    val attachments: List<Attachment> = emptyList()
 ) {
     val id: String get() = task.id
 
@@ -190,7 +194,8 @@ data class TaskDetail(
             json.decodeFromJsonElement(obj),
             obj["followers"]?.let { json.decodeFromJsonElement<List<UserSummary>>(it) } ?: emptyList(),
             obj["subtasks"]?.let { json.decodeFromJsonElement<List<TaskItem>>(it) } ?: emptyList(),
-            obj["parent"]?.let { json.decodeFromJsonElement<TaskParentRef?>(it) }
+            obj["parent"]?.let { json.decodeFromJsonElement<TaskParentRef?>(it) },
+            obj["attachments"]?.let { json.decodeFromJsonElement<List<Attachment>>(it) } ?: emptyList()
         )
         override fun write(json: Json, value: TaskDetail) = merge(
             json.encodeToJsonElement(value.task).jsonObject,
@@ -198,6 +203,7 @@ data class TaskDetail(
                 put("followers", json.encodeToJsonElement(value.followers))
                 put("subtasks", json.encodeToJsonElement(value.subtasks))
                 put("parent", json.encodeToJsonElement(value.parent))
+                put("attachments", json.encodeToJsonElement(value.attachments))
             }
         )
     }
