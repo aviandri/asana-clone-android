@@ -70,6 +70,7 @@ import com.mekari.project.ui.screens.TaskDetailScreen
 import com.mekari.project.ui.screens.WorkspaceSheet
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 
 /** The app-level scope for holder actions (AppContainer.appScope): writes outlive the screen that started them. */
 val LocalAppScope = staticCompositionLocalOf<CoroutineScope> { MainScope() }
@@ -209,10 +210,18 @@ private fun MainShell(
         }
     }
 
+    // The pane's task is left when another is picked or the pane is closed: its composer's drafts go then (not
+    // when a fold moves it to the full-screen route, above).
+    val appScope = LocalAppScope.current
+    val leavePane: (String?) -> Unit = { next ->
+        val previous = paneTask
+        if (previous != null && previous != next) appScope.launch { scope.taskDetail(previous).composer.discard() }
+    }
     val openTask: (String) -> Unit = { id ->
         if (expanded &&
             selected == TopDestination.MY_TASKS
         ) {
+            leavePane(id)
             paneTask = id
         } else {
             nav.navigate(Routes.task(id))
@@ -279,7 +288,10 @@ private fun MainShell(
                                             TaskDetailScreen(
                                                 scope,
                                                 id,
-                                                onBack = { paneTask = null },
+                                                onBack = {
+                                                    leavePane(null)
+                                                    paneTask = null
+                                                },
                                                 onOpenTask = openTask,
                                                 inPane = true,
                                                 server = session.settings.serverUrl

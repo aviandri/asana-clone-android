@@ -73,20 +73,35 @@ object AttachmentShare {
 
     fun contentUri(context: Context, file: File): Uri = FileProvider.getUriForFile(context, authority(context), file)
 
-    /** Where the camera writes a photo before it's uploaded (TakePicture needs a Uri it can write). */
-    fun newCameraFile(context: Context, now: Date = Date()): File {
+    /**
+     * Where the camera writes a photo before it's uploaded (TakePicture needs a Uri it can write): a random
+     * name in one flat folder, uploaded as "Photo <date>.jpg".
+     */
+    fun newCameraFile(context: Context): File {
         val dir = File(context.cacheDir, CAMERA_DIR).also { it.mkdirs() }
-        val stamp = SimpleDateFormat("yyyy-MM-dd 'at' HH.mm.ss", Locale.ROOT).format(now)
-        return File(File(dir, UUID.randomUUID().toString()).also { it.mkdirs() }, "Photo $stamp.jpg")
+        return File(dir, "${UUID.randomUUID()}.jpg")
     }
 
     /** The upload of a camera capture: ours, so it's deleted once the upload leaves its list. */
-    fun cameraSource(file: File): UploadSource = FileUploadSource(file, file.name, owned = true)
+    fun cameraSource(file: File, now: Date = Date()): UploadSource {
+        val stamp = SimpleDateFormat("yyyy-MM-dd 'at' HH.mm.ss", Locale.ROOT).format(now)
+        return FileUploadSource(file, "Photo $stamp.jpg", owned = true)
+    }
 
-    /** Removes a capture the camera didn't finish (cancelled), with its folder. */
+    /** Removes a capture the camera didn't finish (cancelled). */
     fun discardCameraFile(file: File) {
         file.delete()
-        file.parentFile?.takeIf { it.parentFile?.name == CAMERA_DIR }?.delete()
+    }
+
+    /**
+     * Camera captures left behind (a crash, process death mid-upload, or another user's before a sign-out).
+     * Every wipe of the attachment cache removes them all; startup removes those older than [olderThanMs],
+     * so a photo the camera just wrote for a recreated activity survives.
+     */
+    fun clearCameraCaptures(context: Context, olderThanMs: Long = 0, now: Long = System.currentTimeMillis()) {
+        File(context.cacheDir, CAMERA_DIR).listFiles()?.forEach { file ->
+            if (olderThanMs == 0L || now - file.lastModified() > olderThanMs) file.deleteRecursively()
+        }
     }
 
     const val CAMERA_DIR = "camera-captures"

@@ -90,8 +90,25 @@ class AttachmentWiringTest {
         val container = AppContainer(context)
         val session = signedIn(container)
         seed(container.thumbnailLoader)
+        // Another user's capture mustn't outlive the sign-out.
+        val capture = AttachmentShare.newCameraFile(context).apply { writeText("jpeg") }
         container.appScope.launch { session.signOut() }
         idleUntil("Coil wiped after sign-out") { isWiped(container.thumbnailLoader) }
+        idleUntil("camera captures removed after sign-out") { !capture.exists() }
+    }
+
+    @Test
+    fun startupRemovesOnlyStaleCameraCaptures() {
+        val stale = AttachmentShare.newCameraFile(context).apply {
+            writeText("old")
+            setLastModified(System.currentTimeMillis() - 2 * 60 * 60 * 1000L)
+        }
+        // A photo the camera just wrote for a recreated activity survives.
+        val fresh = AttachmentShare.newCameraFile(context).apply { writeText("new") }
+        val container = AppContainer(context)
+        container.session(fakeApi = true)
+        idleUntil("the stale capture removed at startup") { !stale.exists() }
+        assertTrue("a fresh capture is kept", fresh.exists())
     }
 
     @Test
@@ -172,11 +189,13 @@ class AttachmentWiringTest {
     @Test
     fun aCameraCaptureIsOursAndGoesWithItsUpload() {
         val file = AttachmentShare.newCameraFile(context).apply { writeText("jpeg") }
-        assertTrue(file.name.startsWith("Photo "))
+        // A random file name in one flat folder; uploaded as "Photo <date>.jpg".
+        assertEquals(File(context.cacheDir, AttachmentShare.CAMERA_DIR), file.parentFile)
         val source = AttachmentShare.cameraSource(file)
-        assertEquals(file.name, source.name)
+        assertTrue(source.name, source.name.startsWith("Photo ") && source.name.endsWith(".jpg"))
         source.delete()
         assertTrue("the capture is deleted once its upload is done", !file.exists())
+        assertTrue("nothing left in the camera folder", file.parentFile!!.listFiles().isNullOrEmpty())
         // (FileProvider's Uri isn't checked here: it caches its roots statically, and every Robolectric test has
         // a new data dir.)
     }

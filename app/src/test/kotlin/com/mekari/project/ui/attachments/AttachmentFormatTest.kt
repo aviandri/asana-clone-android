@@ -64,6 +64,17 @@ class AttachmentFormatTest {
     }
 
     @Test
+    fun aBareStatusCountsLikeItsCode() {
+        // A proxy's page: no JSON body, so no code, only the status.
+        val forbidden = ApiError(ApiError.Code("HTTP_403"), 403, "Forbidden")
+        assertEquals("You can't add attachments here.", AttachmentFormat.errorMessage(forbidden, "a.png"))
+        assertFalse(AttachmentFormat.isRetryable(forbidden))
+        val tooLarge = ApiError(ApiError.Code("HTTP_413"), 413, "Request Entity Too Large")
+        assertEquals("a.png is larger than 100 MB.", AttachmentFormat.errorMessage(tooLarge, "a.png"))
+        assertFalse(AttachmentFormat.isRetryable(tooLarge))
+    }
+
+    @Test
     fun linkProblemsPreferTheUrlIssue() {
         val invalid = ApiError(
             ApiError.Code.VALIDATION,

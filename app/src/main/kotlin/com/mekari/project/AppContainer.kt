@@ -32,6 +32,7 @@ import com.mekari.project.feature.FeaturePrefs
 import com.mekari.project.feature.LoadState
 import com.mekari.project.feature.NavigationTarget
 import com.mekari.project.feature.SignInError
+import com.mekari.project.ui.attachments.AttachmentShare
 import com.mekari.project.ui.attachments.Thumbnails
 import java.io.File
 import java.io.IOException
@@ -159,8 +160,14 @@ class AppContainer(private val context: Context) {
     /** Coil for attachment thumbnails (memory + cacheDir/attachment-thumbs), cleared with every attachment wipe. */
     val thumbnailLoader: ImageLoader by lazy { Thumbnails.imageLoader(context) }
 
-    /** After every wipe of the attachment cache (sign-out, lost workspace, start while signed out). */
-    private val attachmentsWiped: () -> Unit = { Thumbnails.clear(thumbnailLoader) }
+    /**
+     * After every wipe of the attachment cache (sign-out, lost workspace, start while signed out): Coil's caches
+     * and any camera captures (another user's photos mustn't stay).
+     */
+    private val attachmentsWiped: () -> Unit = {
+        Thumbnails.clear(thumbnailLoader, appScope)
+        appScope.launch(Dispatchers.IO) { AttachmentShare.clearCameraCaptures(context) }
+    }
 
     /**
      * The session's own work (its coroutines and the follow* collectors). Production keeps one session for the
@@ -191,6 +198,8 @@ class AppContainer(private val context: Context) {
     fun session(fakeApi: Boolean, signedIn: Boolean = true, fake: FakeApi? = null): AppSession {
         currentSession?.let { return it }
         val work = sessionScope
+        // Captures a crash or process death left behind (an hour old: not one the camera just wrote for us).
+        appScope.launch(Dispatchers.IO) { AttachmentShare.clearCameraCaptures(context, olderThanMs = 60 * 60 * 1000L) }
         val session = if (fakeApi) {
             val api = fake ?: FakeApi(signedInAs = if (signedIn) "alice@example.com" else null)
             AppSession.uiTest(signedIn, work, api, AttachmentCache(attachmentCacheDir), attachmentsWiped)

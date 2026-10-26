@@ -71,7 +71,6 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
@@ -81,6 +80,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mekari.project.TestTags
 import com.mekari.project.core.Activity
 import com.mekari.project.core.ActivityType
@@ -106,7 +106,7 @@ import com.mekari.project.ui.attachments.AttachmentViewer
 import com.mekari.project.ui.attachments.AttachmentsSection
 import com.mekari.project.ui.attachments.CommentAttachments
 import com.mekari.project.ui.attachments.ComposerChips
-import com.mekari.project.ui.attachments.findActivity
+import com.mekari.project.ui.attachments.ComposerLease
 import com.mekari.project.ui.attachments.rememberAttachmentActions
 import com.mekari.project.ui.components.Avatar
 import com.mekari.project.ui.components.CompletionCheckbox
@@ -124,7 +124,6 @@ import com.mekari.project.ui.runAction
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
-import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -158,13 +157,10 @@ fun TaskDetailScreen(
     var adding by rememberSaveable(taskId) { mutableStateOf<AttachTarget?>(null) }
     var composerNotice by remember(taskId) { mutableStateOf<String?>(null) }
     val actions = rememberAttachmentActions(store, files, server, state.task, scope.id) { viewing = it.id }
-    // Leaving the task discards the composer's drafts (not a rotation: the store outlives the activity).
-    val context = LocalContext.current
-    DisposableEffect(store) {
-        onDispose {
-            if (context.findActivity()?.isChangingConfigurations != true) appScope.launch { store.composer.discard() }
-        }
-    }
+    // Leaving the task discards the composer's drafts: on the full-screen route, when its back-stack entry goes
+    // (an entry-scoped ViewModel outlives rotation and opening a subtask, a link or a mention on top). The pane
+    // discards when the user picks another task or closes it (MainShell).
+    if (!inPane) viewModel(key = "composer.$taskId") { ComposerLease(store.composer, appScope) }
 
     Scaffold(
         modifier = Modifier.testTag(TestTags.TASK_DETAIL),

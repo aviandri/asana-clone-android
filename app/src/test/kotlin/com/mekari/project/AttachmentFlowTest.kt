@@ -1,11 +1,15 @@
 package com.mekari.project
 
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.semantics.getOrNull
+import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.performTextInput
 import com.mekari.project.core.fake.DemoIds
@@ -152,5 +156,34 @@ class AttachmentFlowTest : AppFlowTestBase() {
                 useUnmergedTree = true
             ).fetchSemanticsNodes().isNotEmpty()
         }
+    }
+
+    @Test
+    fun draftsSurviveOpeningASubtaskAndComingBack() {
+        val fake = FakeApi()
+        openTask(fake)
+        compose.onNodeWithTag(TestTags.COMPOSER_ATTACH).performClick()
+        waitForTag(TestTags.ATTACH_LINK)
+        compose.onNodeWithTag(TestTags.ATTACH_LINK).performSemanticsAction(SemanticsActions.OnClick)
+        waitForTag(TestTags.LINK_URL)
+        compose.onNodeWithTag(TestTags.LINK_URL).performTextInput("https://example.com/draft")
+        compose.onNodeWithTag(TestTags.LINK_SUBMIT).performClick()
+        waitForTag(TestTags.COMPOSER_CHIPS)
+
+        // Forward to a subtask: the task's screen leaves composition, but the task wasn't left.
+        val subtask = SemanticsMatcher("a subtask row") { node ->
+            node.config.getOrNull(SemanticsProperties.TestTag).orEmpty().startsWith("subtask.row.")
+        }
+        waitFor("a subtask row") {
+            runCatching { compose.onNodeWithTag(TestTags.TASK_DETAIL_LIST).performScrollToNode(subtask) }.isSuccess
+        }
+        compose.onAllNodes(subtask)[0].performClick()
+        waitFor("the subtask's screen") { isGone(TestTags.COMPOSER_CHIPS) }
+        scenario!!.onActivity { it.onBackPressedDispatcher.onBackPressed() }
+        waitForTag(TestTags.COMPOSER_CHIPS)
+        assertTrue(
+            "the draft is still on the server",
+            fake.currentAttachments().any { it.url == "https://example.com/draft" && it.draft }
+        )
     }
 }

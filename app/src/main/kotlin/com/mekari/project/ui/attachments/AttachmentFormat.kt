@@ -34,22 +34,29 @@ object AttachmentFormat {
         listOf("Attachment", a.name ?: "file", bytes(a.size)).filter { it.isNotEmpty() }.joinToString(", ")
     }
 
-    /** A failed upload or link (web v1.3 copy; 429 and 507 show the server's words). */
-    fun errorMessage(error: ApiError, name: String): String = when (error.code) {
-        ApiError.Code.PAYLOAD_TOO_LARGE -> "$name is larger than 100 MB."
-        ApiError.Code.RATE_LIMITED ->
-            error.message.takeIf { error.status != null && it.isNotEmpty() }
-                ?: "Too many uploads. Try again in a few minutes."
-        ApiError.Code.INSUFFICIENT_STORAGE ->
-            error.message.takeIf { error.status != null && it.isNotEmpty() }
-                ?: "The server is out of storage space. Try again later."
-        ApiError.Code.FORBIDDEN -> "You can't add attachments here."
+    /**
+     * A failed upload or link (web v1.3 copy; 429 and 507 show the server's words). A bare status (a proxy's page,
+     * no JSON body) counts the same as its code.
+     */
+    fun errorMessage(error: ApiError, name: String): String = when {
+        error.code == ApiError.Code.PAYLOAD_TOO_LARGE || error.status == 413 -> "$name is larger than 100 MB."
+        error.code == ApiError.Code.RATE_LIMITED || error.status == 429 ->
+            serverWords(error) ?: "Too many uploads. Try again in a few minutes."
+        error.code == ApiError.Code.INSUFFICIENT_STORAGE || error.status == 507 ->
+            serverWords(error) ?: "The server is out of storage space. Try again later."
+        error.code == ApiError.Code.FORBIDDEN || error.status == 403 -> "You can't add attachments here."
         else -> error.message.ifEmpty { "Upload failed." }
     }
 
+    private fun serverWords(error: ApiError): String? = error.message.takeIf { error.status != null && it.isNotEmpty() }
+
     /** Retry can't help a file over the limit, or one we may not add. */
-    fun isRetryable(error: ApiError): Boolean =
-        error.code != ApiError.Code.PAYLOAD_TOO_LARGE && error.code != ApiError.Code.FORBIDDEN
+    fun isRetryable(error: ApiError): Boolean = !(
+        error.code == ApiError.Code.PAYLOAD_TOO_LARGE ||
+            error.status == 413 ||
+            error.code == ApiError.Code.FORBIDDEN ||
+            error.status == 403
+        )
 
     /** The problem with an Add link attempt: the `url` issue (local or the server's), else the message. */
     fun linkProblem(error: ApiError): String =

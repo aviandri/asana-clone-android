@@ -15,6 +15,10 @@ import coil3.request.Options
 import com.mekari.project.core.AttachmentLinks
 import com.mekari.project.feature.AttachmentFiles
 import java.io.File
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.launch
 import okio.Buffer
 import okio.Path.Companion.toOkioPath
 
@@ -43,10 +47,13 @@ object Thumbnails {
         }
         .build()
 
-    /** After every attachment-cache wipe (sign-out, lost workspace, start while signed out). */
-    fun clear(loader: ImageLoader) {
+    /**
+     * After every attachment-cache wipe (sign-out, lost workspace, start while signed out): memory at once
+     * (the caller's thread), the disk cache on IO (it deletes files; the hook runs on main).
+     */
+    fun clear(loader: ImageLoader, scope: CoroutineScope): Job {
         loader.memoryCache?.clear()
-        loader.diskCache?.clear()
+        return scope.launch(Dispatchers.IO) { loader.diskCache?.clear() }
     }
 }
 

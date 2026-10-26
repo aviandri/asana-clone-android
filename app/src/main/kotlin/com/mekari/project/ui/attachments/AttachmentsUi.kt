@@ -129,17 +129,29 @@ class AttachmentActions(
 
     fun saveToDevice(a: Attachment) = saveAs(a)
 
-    /** After the SAF "Save to device" picker: copy the downloaded file into the chosen document. */
-    fun writeTo(a: Attachment, target: Uri) = withFile(a) { file ->
-        val ok = withContext(Dispatchers.IO) {
-            runCatching {
-                context.contentResolver.openOutputStream(target)?.use { out ->
-                    file.inputStream().use { it.copyTo(out) }
+    /**
+     * After the SAF "Save to device" picker: copy the downloaded file into the chosen document. If that fails
+     * (or the download does), the empty document SAF already created is removed.
+     */
+    fun writeTo(a: Attachment, target: Uri) {
+        appScope.launch {
+            val file = files.file(a)
+            val ok = file != null &&
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(target)?.use { out ->
+                            file.inputStream().use { it.copyTo(out) }
+                        }
+                            ?: error("no stream")
+                    }.isSuccess
                 }
-                    ?: error("no stream")
-            }.isSuccess
+            if (!ok) {
+                withContext(Dispatchers.IO) {
+                    runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, target) }
+                }
+            }
+            notify(if (ok) "Saved ${a.displayName}" else "Couldn't save ${a.displayName}")
         }
-        notify(if (ok) "Saved ${a.displayName}" else "Couldn't save ${a.displayName}")
     }
 
     /** A LINK: ACTION_VIEW (App Links route Figma, YouTube, Drive… to their apps). Only http/https. */
@@ -192,14 +204,10 @@ fun rememberAttachmentActions(
     val appScope = LocalAppScope.current
     val snackbar = LocalSnackbarHost.current
     val latestTask = rememberUpdatedTask(task)
-    var saving by remember { mutableStateOf<Attachment?>(null) }
-    var actions: AttachmentActions? = null
-    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
-        val a = saving
-        saving = null
-        if (uri != null && a != null) actions?.writeTo(a, uri)
-    }
-    actions = remember(store, files, server, workspaceId) {
+    // The attachment being saved survives a rotation inside the SAF picker (by id; looked up again on return).
+    var savingId by rememberSaveable { mutableStateOf<String?>(null) }
+    val launcher = remember { arrayOfNulls<androidx.activity.compose.ManagedActivityResultLauncher<String, Uri?>>(1) }
+    val actions = remember(store, files, server, workspaceId) {
         AttachmentActions(
             context = context,
             appScope = appScope,
@@ -210,11 +218,25 @@ fun rememberAttachmentActions(
             task = { latestTask.value },
             workspaceId = workspaceId,
             saveAs = { a ->
-                saving = a
-                save.launch(a.name ?: "file")
+                savingId = a.id
+                launcher[0]?.launch(a.name ?: "file")
             },
             preview = preview
         )
+    }
+    launcher[0] = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("*/*")) { uri ->
+        val id = savingId
+        savingId = null
+        if (uri == null) return@rememberLauncherForActivityResult
+        val a = id?.let { saved -> store.state.value.attachments.firstOrNull { it.id == saved } }
+        if (a != null) {
+            actions.writeTo(a, uri)
+        } else {
+            // Gone meanwhile: don't leave the empty document SAF already made.
+            appScope.launch(Dispatchers.IO) {
+                runCatching { android.provider.DocumentsContract.deleteDocument(context.contentResolver, uri) }
+            }
+        }
     }
     return actions
 }
@@ -686,8 +708,16 @@ private fun UploadRow(upload: AttachmentUpload, onCancel: () -> Unit, onRetry: (
                 modifier = Modifier.padding(horizontal = 12.dp)
             )
             is AttachmentUpload.State.Failed -> {
-                if (AttachmentFormat.isRetryable(state.error)) TextButton(onClick = onRetry) { Text("Retry") }
-                TextButton(onClick = onCancel) { Text("Dismiss") }
+                if (AttachmentFormat.isRetryable(state.error)) {
+                    TextButton(
+                        onClick = onRetry,
+                        modifier = Modifier.semantics { contentDescription = "Retry uploading ${upload.name}" }
+                    ) { Text("Retry") }
+                }
+                TextButton(
+                    onClick = onCancel,
+                    modifier = Modifier.semantics { contentDescription = "Dismiss ${upload.name}" }
+                ) { Text("Dismiss") }
             }
             is AttachmentUpload.State.Finished -> Unit
         }
@@ -765,7 +795,10 @@ private fun Chip(chip: AttachmentUpload, removable: Boolean, onRemove: () -> Uni
                         modifier = Modifier.widthIn(max = 180.dp)
                     )
                     if (!isLink && AttachmentFormat.isRetryable(state.error)) {
-                        TextButton(onClick = onRetry) { Text("Retry") }
+                        TextButton(
+                            onClick = onRetry,
+                            modifier = Modifier.semantics { contentDescription = "Retry uploading ${chip.name}" }
+                        ) { Text("Retry") }
                     }
                 }
             }
@@ -798,14 +831,23 @@ fun AddAttachmentSheet(
 ) {
     val context = LocalContext.current
     val resolver = context.contentResolver
+    val appScope = LocalAppScope.current
+    // Name and size come from a ContentResolver query: off the main thread, then handed over on it.
+    val picked: (List<Uri>) -> Unit = { uris ->
+        if (uris.isNotEmpty()) {
+            appScope.launch {
+                onFiles(withContext(Dispatchers.IO) { uris.map { ContentUriSource.from(resolver, it) } })
+            }
+        }
+    }
     var linking by rememberSaveable { mutableStateOf(false) }
     var cameraPath by rememberSaveable { mutableStateOf<String?>(null) }
     val photos = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia()) { uris ->
-        if (uris.isNotEmpty()) onFiles(uris.map { ContentUriSource.from(resolver, it) })
+        picked(uris)
         onDismiss()
     }
     val documents = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        if (uris.isNotEmpty()) onFiles(uris.map { ContentUriSource.from(resolver, it) })
+        picked(uris)
         onDismiss()
     }
     val camera = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { taken ->
@@ -931,4 +973,16 @@ tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
+}
+
+/**
+ * Lives as long as a task's back-stack entry (an entry-scoped ViewModel): through rotation and while another
+ * screen is on top. When the entry is popped, the task was left, so the composer's drafts are discarded
+ * (through the composer, which deletes them server-side).
+ */
+class ComposerLease(private val composer: CommentComposer, private val scope: CoroutineScope) :
+    androidx.lifecycle.ViewModel() {
+    override fun onCleared() {
+        scope.launch { composer.discard() }
+    }
 }

@@ -69,8 +69,11 @@ import coil3.compose.AsyncImage
 import com.mekari.project.TestTags
 import com.mekari.project.core.Attachment
 import com.mekari.project.core.ThumbnailSize
+import com.mekari.project.ui.LocalAppScope
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -276,15 +279,22 @@ private fun ZoomableBox(content: @Composable () -> Unit) {
 @Composable
 private fun PdfPages(file: File) {
     val context = LocalContext.current
-    val renderer = remember(file) {
-        runCatching { PdfRenderer(ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)) }.getOrNull()
+    val appScope = LocalAppScope.current
+    val renderer = remember(file) { openPdf(file) }
+    // Pages render under this lock (the renderer isn't thread-safe), and close() throws while a page is open:
+    // so close under the lock too, on IO, and not cancellable (the screen is going away).
+    val lock = remember(renderer) { Mutex() }
+    DisposableEffect(renderer) {
+        onDispose {
+            if (renderer != null) {
+                appScope.launch(Dispatchers.IO + NonCancellable) { lock.withLock { runCatching { renderer.close() } } }
+            }
+        }
     }
-    DisposableEffect(renderer) { onDispose { runCatching { renderer?.close() } } }
     if (renderer == null) {
         Text("Couldn't open this PDF.", Modifier.padding(24.dp), color = MaterialTheme.colorScheme.onSurfaceVariant)
         return
     }
-    val lock = remember(renderer) { Mutex() }
     val width = context.resources.displayMetrics.widthPixels.coerceAtMost(2000)
     val pager = rememberPagerState { renderer.pageCount }
     Column(Modifier.fillMaxSize()) {
@@ -317,6 +327,16 @@ private fun PdfPages(file: File) {
             style = MaterialTheme.typography.labelMedium,
             modifier = Modifier.align(Alignment.CenterHorizontally).padding(8.dp)
         )
+    }
+}
+
+/** A renderer for [file], or null (not a PDF it can read); the descriptor is closed if the renderer can't take it. */
+private fun openPdf(file: File): PdfRenderer? {
+    val descriptor =
+        runCatching { ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY) }.getOrNull() ?: return null
+    return runCatching { PdfRenderer(descriptor) }.getOrElse {
+        runCatching { descriptor.close() }
+        null
     }
 }
 
