@@ -555,14 +555,23 @@ class AppSession(
         /**
          * The fake-API launch flag: FakeApi with in-memory stores. With signedIn = false, start() ends in
          * SignedOut and sign-in works with any server URL and password123. Pass your own [fake] to drive
-         * failNext/hold/release from tests. The caller runs start().
+         * failNext/hold/release from tests, and the app's cache and wipe hook (Coil) to test the wipe paths. The caller
+         * runs start().
          */
         fun uiTest(
             signedIn: Boolean,
             appScope: CoroutineScope,
-            fake: FakeApi = FakeApi(signedInAs = if (signedIn) "alice@example.com" else null)
-        ): AppSession = AppSession(InMemoryServerSettings(DEMO_SERVER), InMemoryTokenStore(), { _, _ ->
-            fake
-        }, InMemoryFeaturePrefs(), appScope)
+            fake: FakeApi = FakeApi(signedInAs = if (signedIn) "alice@example.com" else null),
+            attachmentCache: AttachmentCache = AttachmentCache.scratch(),
+            onAttachmentsWiped: () -> Unit = {}
+        ): AppSession = AppSession(
+            InMemoryServerSettings(DEMO_SERVER),
+            InMemoryTokenStore(),
+            { _, _ -> fake },
+            InMemoryFeaturePrefs(),
+            appScope,
+            attachmentCache = attachmentCache,
+            onAttachmentsWiped = onAttachmentsWiped
+        )
     }
 }

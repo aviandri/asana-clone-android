@@ -6,6 +6,7 @@ import com.mekari.project.core.AttachmentKind
 import com.mekari.project.core.AttachmentLimits
 import com.mekari.project.core.Comment
 import com.mekari.project.core.FileUploadSource
+import com.mekari.project.core.ThumbnailSize
 import com.mekari.project.core.TransferProgress
 import com.mekari.project.core.fake.DemoIds
 import com.mekari.project.core.fake.FakeApi
@@ -511,6 +512,25 @@ class AttachmentStoreTest {
     }
 
     @Test
+    fun imageDataServesThumbnailsAndIsQuietWhenThereIsNone() = runTest {
+        val (session, store) = openTask()
+        val files = session.scope.value!!.attachmentFiles
+        val png = store.attachments.first { it.id == DemoIds.ATTACHMENT_PNG }
+        assertTrue(FakeApi.PNG_BYTES.contentEquals(files.imageData(png.thumbnailPath(ThumbnailSize.SMALL)!!)))
+        val pdf = store.attachments.first { it.id == DemoIds.ATTACHMENT_PDF }
+        assertNull(files.imageData("/api/v1/attachments/${pdf.id}/thumbnail?size=small"))
+        assertNull("not an attachment path", files.imageData("/api/v1/auth/me"))
+        assertNull("a missing thumbnail isn't an error", files.state.value.lastError)
+        session.switchWorkspace(DemoIds.ACME_PILOT)
+        try {
+            files.imageData(png.thumbnailPath(ThumbnailSize.SMALL)!!)
+            org.junit.Assert.fail("a closed scope refuses it")
+        } catch (_: kotlinx.coroutines.CancellationException) {
+            // As a cancellation, like every request from a closed scope (Coil treats it as a cancelled load).
+        }
+    }
+
+    @Test
     fun signOutCancelsUploadsAndEmptiesTheCache() = runTest {
         val fake = demoFake()
         val (session, store) = openTask(fake)
@@ -559,6 +579,19 @@ class AttachmentStoreTest {
         assertFalse(session.attachmentCache.directory.exists())
         assertEquals("the app clears Coil too", before + 1, wiped)
         fake.release(FakeEndpoint.UPLOAD_ATTACHMENT, all = true)
+    }
+
+    @Test
+    fun uiTestSessionsPassTheCacheAndWipeHookThrough() = runTest {
+        var wiped = 0
+        val cache = testCache()
+        val session = AppSession.uiTest(signedIn = false, appScope = backgroundScope, attachmentCache = cache) {
+            wiped +=
+                1
+        }
+        session.start()
+        assertTrue(session.attachmentCache === cache)
+        assertEquals("starting signed out wipes and tells the app", 1, wiped)
     }
 
     @Test

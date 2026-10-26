@@ -356,6 +356,20 @@ class AttachmentFiles internal constructor(
         cache.cancelDownload(attachmentId)
     }
 
+    /**
+     * Small image bytes for a server-given path (a thumbnail, a link icon or image) through this scope's API:
+     * authenticated, path-checked, refused once the scope closes. Null on any failure, without `lastError` (a missing
+     * thumbnail just shows the type icon). A closed scope's request is a CancellationException, as everywhere. For the
+     * app's Coil fetcher.
+     */
+    suspend fun imageData(path: String): ByteArray? = try {
+        api.attachmentData(path)
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        null
+    }
+
     /** The downloaded copy if there is one. */
     suspend fun cachedFile(attachment: Attachment): File? = cache.cachedFile(attachment.id)
 

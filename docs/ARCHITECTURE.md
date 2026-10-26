@@ -747,6 +747,7 @@ class AttachmentFiles {                   // WorkspaceScope.attachmentFiles
     suspend fun file(attachment, revalidate = true): File?           // revalidate = false: a cached copy at once
     suspend fun cancelDownload(attachmentId)
     suspend fun cachedFile(attachment): File?
+    suspend fun imageData(path): ByteArray?   // thumbnail / link icon / image bytes for Coil; null on any failure, no lastError
 }
 
 // AppSession(..., attachmentCache: AttachmentCache = AttachmentCache.scratch(), onAttachmentsWiped: () -> Unit = {})
