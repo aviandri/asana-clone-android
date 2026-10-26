@@ -69,7 +69,13 @@ class TaskDetailStore internal constructor(
     val state: StateFlow<State> = _state.asStateFlow()
 
     val composer: CommentComposer =
-        CommentComposer(api, taskId, UserSearch(api, scope), UploadRunner(slots, scope)) { comment ->
+        CommentComposer(
+            api,
+            taskId,
+            UserSearch(api, scope),
+            UploadRunner(slots, scope),
+            onReload = { reloadAfterUncertainSend() }
+        ) { comment ->
             _state.update { it.copy(stories = it.stories + comment) }
             if (comment.attachments.isNotEmpty()) {
                 tasks.editAttachments(taskId) { list ->
@@ -311,6 +317,15 @@ class TaskDetailStore internal constructor(
         }
     }
 
+    /** A send's outcome was unknown and it turned out to have landed: show the comment and its attachments. */
+    private suspend fun reloadAfterUncertainSend() {
+        attempt(onError = ::fail) {
+            val stories = api.stories(taskId)
+            tasks.upsert(api.task(taskId))
+            _state.update { it.copy(stories = stories) }
+        }
+    }
+
     /** A finished task-level upload or link (also called by the scope when an upload lands after leaving the task). */
     internal fun attachmentAdded(attachment: Attachment) {
         if (attachment.taskId != taskId) return
@@ -388,6 +403,8 @@ class CommentComposer internal constructor(
     /** Follows mentionQuery. */
     val users: UserSearch,
     private val runner: UploadRunner,
+    /** Reloads the stories and the task (after an uncertain send turned out to have landed). */
+    private val onReload: suspend () -> Unit = {},
     private val onSent: (Comment) -> Unit
 ) {
     data class State(
@@ -443,6 +460,25 @@ class CommentComposer internal constructor(
      */
     suspend fun send(body: String): Boolean {
         if (!canSend(body)) return false
+        // A previous send failed without a definite answer: its chips may already be on a comment.
+        if (uncertain.isNotEmpty()) {
+            _state.update { it.copy(isSending = true) }
+            val landed = try {
+                settleUncertain()
+            } catch (e: ApiError) {
+                _state.update { it.copy(lastError = e) }
+                return false
+            } finally {
+                _state.update { it.copy(isSending = false) }
+            }
+            if (landed && body.trim() == uncertainBody) {
+                // That send did land (the answer was lost): don't post it again.
+                uncertainBody = null
+                _state.update { it.copy(lastError = null, mentionQuery = null) }
+                return true
+            }
+            if (!canSend(body)) return false
+        }
         val chips = _state.value.attachments
         val posted = chips.mapNotNull { chip -> chip.attachment?.let { chip.id to it.id } }
         val failedAtSend = chips.filter { it.isFailed }.map { it.id }.toSet()
@@ -456,6 +492,11 @@ class CommentComposer internal constructor(
                 val error = e.asApiError()
                 _state.update { it.copy(lastError = error) }
                 deleteOrphans(posted, error)
+                if (error.status?.let { it in 400..499 } != true) {
+                    // A transport error or a 5xx: the BE may have committed. Ask before any delete or re-send.
+                    uncertain += posted.map { it.first }.filter { id -> _state.value.attachments.any { it.id == id } }
+                    uncertainBody = body.trim()
+                }
                 return false
             }
             val gone = posted.map { it.first }.toSet() + failedAtSend
@@ -493,6 +534,67 @@ class CommentComposer internal constructor(
             }
             bestEffortDelete(attachmentId)
         }
+    }
+
+    /** Chips a failed send may have posted (transport error or 5xx): checked before any delete or re-send. */
+    private val uncertain = mutableSetOf<String>()
+    private var uncertainBody: String? = null
+
+    /**
+     * Asks the server about every uncertain chip still here. One already on a comment (or no longer a draft, or gone)
+     * leaves without a delete; one still a draft becomes certain again. True when any had landed (the stories are
+     * then reloaded). Throws the ApiError when the server can't say (the chips stay uncertain).
+     */
+    private suspend fun settleUncertain(): Boolean {
+        var landed = false
+        for (chip in _state.value.attachments.filter { it.id in uncertain }) {
+            val attachmentId = chip.attachment?.id ?: continue
+            if (stillADraft(attachmentId)) {
+                uncertain -= chip.id
+            } else {
+                drop(chip)
+                landed = true
+            }
+        }
+        if (landed) onReload()
+        return landed
+    }
+
+    /** Whether the attachment is still an unposted draft (404: gone, so no). Throws when the server can't say. */
+    private suspend fun stillADraft(attachmentId: String): Boolean = try {
+        val current = api.attachment(attachmentId)
+        current.draft && current.commentId == null
+    } catch (e: ApiError) {
+        if (e.code == ApiError.Code.NOT_FOUND) false else throw e
+    }
+
+    private fun drop(chip: AttachmentUpload) {
+        uncertain -= chip.id
+        chip.cleanUp()
+        _state.update { s -> s.copy(attachments = s.attachments.filterNot { it.id == chip.id }) }
+    }
+
+    /**
+     * Deletes a chip's draft, unless it may already be on a comment (an uncertain send): then only if the server
+     * says it is still a draft. When the server can't say, nothing is deleted (it sweeps unposted drafts after 24 h).
+     */
+    private suspend fun deleteDraft(chip: AttachmentUpload) {
+        val attachmentId = chip.attachment?.id ?: return
+        if (chip.id in uncertain) {
+            uncertain -= chip.id
+            val draft = try {
+                stillADraft(attachmentId)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                return
+            }
+            if (!draft) {
+                onReload()
+                return
+            }
+        }
+        bestEffortDelete(attachmentId)
     }
 
     /** Chips discarded while being posted: deleted only if that send fails. */
@@ -569,7 +671,7 @@ class CommentComposer internal constructor(
         _state.update { st -> st.copy(attachments = st.attachments.filterNot { it.id == id }) }
         runner.cancel(id)
         chip.cleanUp()
-        chip.attachment?.let { bestEffortDelete(it.id) }
+        deleteDraft(chip)
         return true
     }
 
@@ -587,7 +689,7 @@ class CommentComposer internal constructor(
         discardedWhileSending += chips.map { it.id }.filter { it in s.sendingIds }
         chips.forEach { it.cleanUp() }
         for (chip in chips) {
-            if (chip.id !in s.sendingIds) chip.attachment?.let { bestEffortDelete(it.id) }
+            if (chip.id !in s.sendingIds) deleteDraft(chip)
         }
     }
 

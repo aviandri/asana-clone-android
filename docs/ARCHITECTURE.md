@@ -758,8 +758,14 @@ class AttachmentFiles {                   // WorkspaceScope.attachmentFiles
   429 is retried once after 1.5 s, but not when the whole body was already sent (the BE's draft-quota check).
 - **Finishing:** once the body is sent, cancel/remove refuse (it lands anyway). `discard()` lets a finishing chip
   land, then deletes its draft; chips being posted are left to the send.
-- **After a failed send**, discarded drafts are deleted only on a 4xx; after a transport error or a 5xx the client
-  first checks the attachment is still an unposted draft.
+- **After a failed send**, discarded drafts are deleted only on a 4xx. After a transport error or a 5xx the BE may
+  have committed, so the posted chips become *uncertain*: before any remove/discard delete and before a re-send, each
+  is checked with `GET /attachments/:id`. One already on a comment leaves without a delete and the stories reload; a
+  re-send of the same text that turns out to have landed reports success without posting again.
+- **No replays:** LiveApi's clients never retry a request (`retryOnConnectionFailure(false)`): a replayed POST would
+  duplicate a link or comment, and its 400 would read as a definite rejection.
+- Downloads land in a temp file that the cache moves into place under its lock after the wipe check; the transport
+  never creates folders, so nothing outlives a wipe in the FileProvider directory.
 - **Wipe rules:** sign-out (including a 401) cancels uploads and wipes the cache (awaited by `signOut()`); starting
   signed out wipes; losing a workspace cancels its uploads and wipes before `/auth/me`. A closed scope cancels its
   composer uploads (drafts are swept server-side after 24 h).

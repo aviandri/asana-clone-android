@@ -400,6 +400,75 @@ class AttachmentStoreTest {
     }
 
     @Test
+    fun aSendWhoseAnswerWasLostNeverDeletesWhatLanded() = runTest {
+        val fake = demoFake()
+        val (_, store) = openTask(fake)
+        val composer = store.composer
+        composer.attach(file("landed.txt"))
+        runCurrent()
+        val draftId = composer.chips.single().attachment!!.id
+        fake.hold(FakeEndpoint.ADD_COMMENT)
+        val sending = async { composer.send("") }
+        runCurrent()
+        // The BE commits, then the answer is lost (a 502 from the proxy).
+        fake.addCommentDirectly(DemoIds.TASK_WITH_ATTACHMENTS, listOf(draftId))
+        fake.failNext(FakeEndpoint.ADD_COMMENT, ApiError(ApiError.Code("HTTP 502"), 502, "Bad gateway"))
+        fake.release(FakeEndpoint.ADD_COMMENT, all = true)
+        assertFalse(sending.await())
+        assertTrue("the chip stays (the outcome is unknown)", composer.chips.single().isFinished)
+        assertTrue(composer.remove(composer.chips.single().id))
+        assertTrue(
+            "it was posted: never deleted",
+            fake.currentAttachments().any {
+                it.id == draftId &&
+                    it.commentId != null
+            }
+        )
+        assertTrue(
+            "the stories reload and show it",
+            store.state.value.stories.filterIsInstance<Comment>().any { c -> c.attachments.any { it.id == draftId } }
+        )
+    }
+
+    @Test
+    fun reSendingAfterALostAnswerDoesntPostTwice() = runTest {
+        val fake = demoFake()
+        val (_, store) = openTask(fake)
+        val composer = store.composer
+        composer.attach(file("once.txt"))
+        runCurrent()
+        val draftId = composer.chips.single().attachment!!.id
+        fake.hold(FakeEndpoint.ADD_COMMENT)
+        val sending = async { composer.send("Here") }
+        runCurrent()
+        fake.addCommentDirectly(DemoIds.TASK_WITH_ATTACHMENTS, listOf(draftId), body = "Here")
+        fake.failNext(FakeEndpoint.ADD_COMMENT, ApiError.transport())
+        fake.release(FakeEndpoint.ADD_COMMENT, all = true)
+        assertFalse(sending.await())
+        val calls = calls(fake, FakeEndpoint.ADD_COMMENT)
+        assertTrue("it had landed: reported as sent", composer.send("Here"))
+        assertEquals("not posted again", calls, calls(fake, FakeEndpoint.ADD_COMMENT))
+        assertEquals(emptyList<AttachmentUpload>(), composer.chips)
+        assertEquals(1, fake.stories(DemoIds.TASK_WITH_ATTACHMENTS).count { it is Comment && it.body == "Here" })
+    }
+
+    @Test
+    fun aLostAnswerThatDidntLandStillDeletesOnRemoveAndDiscard() = runTest {
+        val fake = demoFake()
+        val (_, store) = openTask(fake)
+        val composer = store.composer
+        composer.attach(file("a.txt"))
+        composer.attach(file("b.txt"))
+        runCurrent()
+        val ids = composer.chips.map { it.attachment!!.id }
+        fake.failNext(FakeEndpoint.ADD_COMMENT, ApiError.transport())
+        assertFalse(composer.send(""))
+        assertTrue(composer.remove(composer.chips.first().id))
+        composer.discard()
+        assertTrue("still drafts after asking: deleted", fake.currentAttachments().none { it.id in ids })
+    }
+
+    @Test
     fun twentyChipsAtMostAndFailedOnesDontCount() = runTest {
         val (_, store) = openTask()
         val composer = store.composer
@@ -528,6 +597,24 @@ class AttachmentStoreTest {
         } catch (_: kotlinx.coroutines.CancellationException) {
             // As a cancellation, like every request from a closed scope (Coil treats it as a cancelled load).
         }
+    }
+
+    @Test
+    fun imageDataInFlightWhenTheScopeClosesNeverDelivers() = runTest {
+        val fake = demoFake()
+        val (session, store) = openTask(fake)
+        val files = session.scope.value!!.attachmentFiles
+        val png = store.attachments.first { it.id == DemoIds.ATTACHMENT_PNG }
+        fake.hold(FakeEndpoint.ATTACHMENT_DATA)
+        val loading = async { runCatching { files.imageData(png.thumbnailPath(ThumbnailSize.SMALL)!!) } }
+        runCurrent()
+        session.signOut()
+        fake.release(FakeEndpoint.ATTACHMENT_DATA, all = true)
+        val result = loading.await()
+        assertTrue(
+            "old-session bytes never reach Coil: ${result.getOrNull()}",
+            result.exceptionOrNull() is kotlinx.coroutines.CancellationException
+        )
     }
 
     @Test

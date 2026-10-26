@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
@@ -60,7 +61,7 @@ class AttachmentCache(
         if (!isSafeId(attachment.id)) throw ApiError(ApiError.Code.VALIDATION, null, "Not an attachment")
         val id = attachment.id
         val task = mutex.withLock {
-            loadIndex()
+            withContext(io) { loadIndex() }
             val running = inFlight[id] ?: downloads.async {
                 fetch(id, attachment.name ?: "file", path, api, progress)
             }.also { inFlight[id] = it }
@@ -70,24 +71,32 @@ class AttachmentCache(
         try {
             return task.await()
         } catch (e: CancellationException) {
-            // This caller went away (or the download was cancelled): stop it once nobody waits any more.
-            mutex.withLock {
-                if (inFlight[id] === task) {
-                    cancelledWaiters[id] = (cancelledWaiters[id] ?: 0) + 1
-                    if ((cancelledWaiters[id] ?: 0) >= (waiters[id] ?: 0)) task.cancel()
+            // This caller went away (or the download was cancelled): stop it once nobody waits any more. The
+            // bookkeeping must run even though this coroutine is cancelled.
+            withContext(NonCancellable) {
+                mutex.withLock {
+                    if (inFlight[id] === task) {
+                        cancelledWaiters[id] = (cancelledWaiters[id] ?: 0) + 1
+                        if ((cancelledWaiters[id] ?: 0) >= (waiters[id] ?: 0)) task.cancel()
+                    }
                 }
             }
             throw e
         } finally {
-            mutex.withLock {
-                val left = (waiters[id] ?: 1) - 1
-                if (left <= 0) {
-                    waiters.remove(id)
-                    cancelledWaiters.remove(id)
-                    if (inFlight[id] === task) inFlight.remove(id)
-                } else {
-                    waiters[id] = left
-                }
+            withContext(NonCancellable) { release(id, task) }
+        }
+    }
+
+    /** One waiter less; the last one takes the download out of [inFlight] (a failed or stale one never lingers). */
+    private suspend fun release(id: String, task: Deferred<File>) {
+        mutex.withLock {
+            val left = (waiters[id] ?: 1) - 1
+            if (left <= 0) {
+                waiters.remove(id)
+                cancelledWaiters.remove(id)
+                if (inFlight[id] === task) inFlight.remove(id)
+            } else {
+                waiters[id] = left
             }
         }
     }
@@ -99,33 +108,52 @@ class AttachmentCache(
         api: MekariApi,
         progress: (TransferProgress) -> Unit
     ): File {
-        val (started, cached) = mutex.withLock {
-            generation to entries[id]?.takeIf { File(folder(id), it.name).isFile }
-        }
         val folder = folder(id)
+        val (started, cached) = mutex.withLock {
+            generation to withContext(io) { entries[id]?.takeIf { File(folder, it.name).isFile } }
+        }
         val destination = File(folder, AttachmentLinks.safeFileName(name))
+        // The download lands in a temp file; it's moved into place only below, under the mutex, after the wipe check.
+        // The folder is created here and never by the transport, so a download outliving a wipe can't recreate it.
+        val temp = File(folder, ".${java.util.UUID.randomUUID()}.part")
         withContext(io) { folder.mkdirs() }
         val outcome = try {
             val etag = cached?.etag?.takeIf { cached.name == destination.name }
-            api.download(path, destination, etag, progress)
+            api.download(path, temp, etag, progress)
         } catch (e: ApiError) {
+            withContext(NonCancellable + io) { temp.delete() }
             if (e.code != ApiError.Code.TRANSPORT || cached == null) throw e
             return mutex.withLock { if (started == generation) touch(id, cached) else throw e }
+        } catch (e: CancellationException) {
+            withContext(NonCancellable + io) { temp.delete() }
+            throw e
         }
         return mutex.withLock {
-            if (started != generation) {
-                // Wiped while downloading (sign-out, lost access): the bytes must not stay.
-                remove(folder)
-                throw CancellationException("attachment cache wiped")
-            }
-            when (outcome) {
-                DownloadOutcome.NotModified -> touch(id, cached ?: throw ApiError.decoding("304 without a cached copy"))
-                is DownloadOutcome.Downloaded -> {
-                    if (cached != null && cached.name != destination.name) remove(File(folder, cached.name))
-                    entries[id] = Entry(destination.name, outcome.etag, destination.length(), now())
-                    evict(keep = id)
-                    saveIndex()
-                    destination
+            withContext(io) {
+                if (started != generation) {
+                    // Wiped while downloading (sign-out, lost access): the bytes must not stay.
+                    remove(folder)
+                    throw CancellationException("attachment cache wiped")
+                }
+                when (outcome) {
+                    DownloadOutcome.NotModified -> touch(
+                        id,
+                        cached ?: throw ApiError.decoding("304 without a cached copy")
+                    )
+                    is DownloadOutcome.Downloaded -> {
+                        if (!temp.renameTo(destination)) {
+                            destination.delete()
+                            if (!temp.renameTo(destination)) {
+                                temp.delete()
+                                throw ApiError(ApiError.Code("CLIENT"), null, "Couldn't save the file")
+                            }
+                        }
+                        if (cached != null && cached.name != destination.name) remove(File(folder, cached.name))
+                        entries[id] = Entry(destination.name, outcome.etag, destination.length(), now())
+                        evict(keep = id)
+                        saveIndex()
+                        destination
+                    }
                 }
             }
         }
@@ -135,8 +163,10 @@ class AttachmentCache(
     suspend fun cachedFile(attachmentId: String): File? {
         if (!isSafeId(attachmentId)) return null
         return mutex.withLock {
-            loadIndex()
-            entries[attachmentId]?.let { File(folder(attachmentId), it.name) }?.takeIf { it.isFile }
+            withContext(io) {
+                loadIndex()
+                entries[attachmentId]?.let { File(folder(attachmentId), it.name) }?.takeIf { it.isFile }
+            }
         }
     }
 
@@ -148,7 +178,7 @@ class AttachmentCache(
     }
 
     suspend fun diskUsage(): Long = mutex.withLock {
-        loadIndex()
+        withContext(io) { loadIndex() }
         entries.values.sumOf { it.size }
     }
 

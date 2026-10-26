@@ -33,13 +33,26 @@ internal class SourceBody(
     override fun isOneShot(): Boolean = true
 
     override fun writeTo(sink: BufferedSink) {
+        try {
+            stream(sink)
+        } catch (e: RuntimeException) {
+            // A revoked Uri grant (SecurityException) or a provider bug must fail this call, not crash OkHttp's thread.
+            throw IOException("couldn't read the upload source", e)
+        }
+    }
+
+    private fun stream(sink: BufferedSink) {
         source.open().use { input ->
             val buffer = ByteArray(CHUNK)
             var sent = 0L
             progress(TransferProgress(0, size))
             while (true) {
                 val read = input.read(buffer)
-                if (read < 0) break
+                if (read < 0) {
+                    // End of stream: with an unknown size, this is when the server has the whole body.
+                    if (size == null) progress(TransferProgress(sent, sent))
+                    break
+                }
                 sent += read
                 if (sent > AttachmentLimits.MAX_UPLOAD_BYTES) {
                     tooLarge = true
@@ -89,8 +102,8 @@ private fun streamed(response: Response, destination: File, progress: (TransferP
     if (response.code != 200 || body == null) {
         return LiveApi.Raw(response.code, response.headers, body?.string().orEmpty().take(1 shl 20))
     }
+    // Never creates the folder: the caller did, and a wipe since then must make this fail, not recreate it.
     val folder = destination.absoluteFile.parentFile ?: throw IOException("no folder for $destination")
-    folder.mkdirs()
     val temp = File(folder, ".${UUID.randomUUID()}.part")
     try {
         val total = body.contentLength().takeIf { it >= 0 }

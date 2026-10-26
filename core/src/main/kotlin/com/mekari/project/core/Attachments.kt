@@ -204,6 +204,7 @@ object AttachmentLinks {
     /** A server path the client may GET: under `/api/v1/attachments/`, no `..`, no scheme or host. */
     fun isAttachmentPath(path: String): Boolean = path.startsWith(PATH_PREFIX) &&
         ".." !in path &&
+        !path.contains("%2e", ignoreCase = true) &&
         "//" !in path &&
         '\\' !in path &&
         path.none { it.isWhitespace() }
@@ -236,7 +237,7 @@ object AttachmentLinks {
         val suffix = if (ext.isEmpty() || ext.toByteArray().size > 20) "" else ".$ext"
         var stem = if (suffix.isEmpty()) cleaned else cleaned.dropLast(suffix.length)
         while ((stem + suffix).toByteArray().size > 200) stem = stem.dropLast(1)
-        cleaned = stem + suffix
-        return cleaned
+        // Truncating can expose whitespace or leave only dots: clean again so the result stays a fixed point.
+        return safeFileName(stem + suffix)
     }
 }
