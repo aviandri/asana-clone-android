@@ -64,10 +64,16 @@ class LiveApi(
     private val client: OkHttpClient = client.newBuilder()
         .followRedirects(false)
         .followSslRedirects(false)
-        // Never replay a request: a retried POST (a link, a comment with attachmentIds) would be a duplicate, and its
+        // Never replay a write: a retried POST (a link, a comment with attachmentIds) would be a duplicate, and its
         // 400 would read as a definite rejection.
         .retryOnConnectionFailure(false)
         .build()
+
+    /**
+     * GETs keep OkHttp's stale-connection recovery: the pool keeps connections 5 min while nginx/Fastify close idle
+     * ones at about 75 s, and the first GET after a pause would otherwise fail as "Can't reach the server".
+     */
+    private val readClient: OkHttpClient = this.client.newBuilder().retryOnConnectionFailure(true).build()
 
     /**
      * Uploads and downloads: the server may sit quiet for a while after the last byte (storing, thumbnails), so a
@@ -78,6 +84,9 @@ class LiveApi(
         .writeTimeout(TRANSFER_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .retryOnConnectionFailure(false)
         .build()
+
+    /** Downloads (idempotent GETs): the transfer timeouts, with stale-connection recovery. */
+    private val downloadClient: OkHttpClient = transferClient.newBuilder().retryOnConnectionFailure(true).build()
 
     @Volatile private var workspaceId: String? = null
     private val eventChannel = Channel<ApiEvent>(Channel.UNLIMITED)
@@ -94,7 +103,7 @@ class LiveApi(
 
     override suspend fun health() {
         val url = server.newBuilder().addPathSegment("health").build()
-        val raw = perform(Request.Builder().url(url).get().build())
+        val raw = perform(Request.Builder().url(url).get().build(), readClient)
         if (raw.code !in 200..299) {
             throw ApiError(ApiError.Code("HTTP ${raw.code}"), raw.code, "Not a Mekari Project server")
         }
@@ -312,7 +321,7 @@ class LiveApi(
         val (request, sentToken) = bytesRequest(path, etag)
         currentCoroutineContext().ensureActive()
         val raw = try {
-            transferClient.newCall(request).awaitDownload(destination, progress)
+            downloadClient.newCall(request).awaitDownload(destination, progress)
         } catch (_: IOException) {
             currentCoroutineContext().ensureActive()
             throw ApiError.transport()
@@ -326,7 +335,7 @@ class LiveApi(
         val (request, sentToken) = bytesRequest(path, null)
         currentCoroutineContext().ensureActive()
         val (raw, bytes) = try {
-            client.newCall(request).awaitBytes()
+            readClient.newCall(request).awaitBytes()
         } catch (_: IOException) {
             currentCoroutineContext().ensureActive()
             throw ApiError.transport()
@@ -390,7 +399,7 @@ class LiveApi(
         token: () -> String? = tokens::load,
         /** A non-JSON body (the multipart upload); wins over [body]. */
         requestBody: RequestBody? = null,
-        http: OkHttpClient = client
+        http: OkHttpClient = if (method == Method.GET) readClient else client
     ): Raw {
         val url = server.newBuilder().addPathSegments("api/v1").apply {
             path.split('/').filter { it.isNotEmpty() }.forEach { addPathSegment(it) }

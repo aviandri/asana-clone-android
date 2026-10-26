@@ -453,6 +453,50 @@ class AttachmentStoreTest {
     }
 
     @Test
+    fun aCancelledSendLeavesItsChipsUncertain() = runTest {
+        val fake = demoFake()
+        val (_, store) = openTask(fake)
+        val composer = store.composer
+        composer.attach(file("cancelled.txt"))
+        runCurrent()
+        val draftId = composer.chips.single().attachment!!.id
+        fake.hold(FakeEndpoint.ADD_COMMENT)
+        val sending = launch { composer.send("") }
+        runCurrent()
+        fake.addCommentDirectly(DemoIds.TASK_WITH_ATTACHMENTS, listOf(draftId)) // the BE commits
+        sending.cancel() // and the caller goes away before the answer
+        runCurrent()
+        fake.release(FakeEndpoint.ADD_COMMENT, all = true)
+        runCurrent()
+        assertTrue(composer.state.value.sendingIds.isEmpty())
+        composer.discard()
+        assertTrue(
+            "a cancelled send is no rejection: what landed is never deleted",
+            fake.currentAttachments().any { it.id == draftId }
+        )
+    }
+
+    @Test
+    fun aSweptDraftDoesntCountAsLandedSoTheTextIsPosted() = runTest {
+        val fake = demoFake()
+        val (_, store) = openTask(fake)
+        val composer = store.composer
+        composer.attach(file("swept.txt"))
+        runCurrent()
+        val draftId = composer.chips.single().attachment!!.id
+        fake.failNext(FakeEndpoint.ADD_COMMENT, ApiError.transport()) // the send really failed
+        assertFalse(composer.send("Really sent?"))
+        fake.deleteAttachment(draftId) // later the draft is swept (or deleted elsewhere)
+        assertTrue(composer.send("Really sent?")) // the user tries again with the same text
+        assertEquals("the gone chip left", emptyList<AttachmentUpload>(), composer.chips)
+        assertEquals(
+            "a 404 isn't 'landed': the text is posted, not dropped",
+            "Really sent?",
+            (store.state.value.stories.last() as Comment).body
+        )
+    }
+
+    @Test
     fun aLostAnswerThatDidntLandStillDeletesOnRemoveAndDiscard() = runTest {
         val fake = demoFake()
         val (_, store) = openTask(fake)

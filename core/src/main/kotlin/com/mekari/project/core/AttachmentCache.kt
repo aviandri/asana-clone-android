@@ -128,32 +128,48 @@ class AttachmentCache(
             withContext(NonCancellable + io) { temp.delete() }
             throw e
         }
-        return mutex.withLock {
-            withContext(io) {
-                if (started != generation) {
-                    // Wiped while downloading (sign-out, lost access): the bytes must not stay.
-                    remove(folder)
-                    throw CancellationException("attachment cache wiped")
-                }
-                when (outcome) {
-                    DownloadOutcome.NotModified -> touch(
-                        id,
-                        cached ?: throw ApiError.decoding("304 without a cached copy")
-                    )
-                    is DownloadOutcome.Downloaded -> {
+        return try {
+            moveIntoPlace(id, started, cached, folder, destination, temp, outcome)
+        } catch (e: CancellationException) {
+            // Cancelled while waiting for the lock (cancelDownload, a wipe): the temp file (up to 100 MB) goes now.
+            withContext(NonCancellable + io) { temp.delete() }
+            throw e
+        }
+    }
+
+    private suspend fun moveIntoPlace(
+        id: String,
+        started: Int,
+        cached: Entry?,
+        folder: File,
+        destination: File,
+        temp: File,
+        outcome: DownloadOutcome
+    ): File = mutex.withLock {
+        withContext(io) {
+            if (started != generation) {
+                // Wiped while downloading (sign-out, lost access): the bytes must not stay.
+                remove(folder)
+                throw CancellationException("attachment cache wiped")
+            }
+            when (outcome) {
+                DownloadOutcome.NotModified -> touch(
+                    id,
+                    cached ?: throw ApiError.decoding("304 without a cached copy")
+                )
+                is DownloadOutcome.Downloaded -> {
+                    if (!temp.renameTo(destination)) {
+                        destination.delete()
                         if (!temp.renameTo(destination)) {
-                            destination.delete()
-                            if (!temp.renameTo(destination)) {
-                                temp.delete()
-                                throw ApiError(ApiError.Code("CLIENT"), null, "Couldn't save the file")
-                            }
+                            temp.delete()
+                            throw ApiError(ApiError.Code("CLIENT"), null, "Couldn't save the file")
                         }
-                        if (cached != null && cached.name != destination.name) remove(File(folder, cached.name))
-                        entries[id] = Entry(destination.name, outcome.etag, destination.length(), now())
-                        evict(keep = id)
-                        saveIndex()
-                        destination
                     }
+                    if (cached != null && cached.name != destination.name) remove(File(folder, cached.name))
+                    entries[id] = Entry(destination.name, outcome.etag, destination.length(), now())
+                    evict(keep = id)
+                    saveIndex()
+                    destination
                 }
             }
         }

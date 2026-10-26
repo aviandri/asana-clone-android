@@ -290,6 +290,17 @@ class AttachmentLiveApiTest {
     }
 
     @Test
+    fun getsRecoverFromAStaleConnection() = runBlocking {
+        // The server closed the idle pooled connection (nginx/Fastify at ~75 s): a GET is replayed on a new one.
+        server.enqueue(MockResponse().setBody(FILE_JSON))
+        api.attachment("a0000000-0000-4000-8000-000000000001")
+        server.enqueue(MockResponse().setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AFTER_REQUEST))
+        server.enqueue(MockResponse().setBody(FILE_JSON))
+        assertEquals("login.png", api.attachment("a0000000-0000-4000-8000-000000000001").name)
+        assertEquals(3, server.requestCount)
+    }
+
+    @Test
     fun aDownloadNeverCreatesItsFolder() = runBlocking {
         val gone = File(scratch, "wiped/a0000000-0000-4000-8000-000000000001")
         server.enqueue(MockResponse().setBody("bytes"))

@@ -762,8 +762,11 @@ class AttachmentFiles {                   // WorkspaceScope.attachmentFiles
   have committed, so the posted chips become *uncertain*: before any remove/discard delete and before a re-send, each
   is checked with `GET /attachments/:id`. One already on a comment leaves without a delete and the stories reload; a
   re-send of the same text that turns out to have landed reports success without posting again.
-- **No replays:** LiveApi's clients never retry a request (`retryOnConnectionFailure(false)`): a replayed POST would
-  duplicate a link or comment, and its 400 would read as a definite rejection.
+- **No replayed writes:** POST/PATCH/DELETE (uploads included) never retry (`retryOnConnectionFailure(false)`): a
+  replayed POST would duplicate a link or comment, and its 400 would read as a definite rejection. GETs (and
+  downloads) keep OkHttp's stale-connection recovery (the pool outlives the server's ~75 s idle timeout).
+- A cancelled send leaves its chips uncertain too; a draft that is gone (404) proves nothing landed, so a re-send
+  posts the text.
 - Downloads land in a temp file that the cache moves into place under its lock after the wipe check; the transport
   never creates folders, so nothing outlives a wipe in the FileProvider directory.
 - **Wipe rules:** sign-out (including a 401) cancels uploads and wipes the cache (awaited by `signOut()`); starting
