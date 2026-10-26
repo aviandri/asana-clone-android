@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider roots (SPEC-ANDROID §8): downloaded attachments (cacheDir/attachments, the AttachmentCache) for
+     Open with / Share, and the camera's temp folder for TakePicture output. Nothing else is shared. -->
+<paths>
+  <cache-path name="attachments" path="attachments/" />
+  <cache-path name="camera" path="camera-captures/" />
+</paths>

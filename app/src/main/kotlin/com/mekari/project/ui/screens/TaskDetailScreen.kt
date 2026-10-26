@@ -80,6 +80,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mekari.project.TestTags
 import com.mekari.project.core.Activity
 import com.mekari.project.core.ActivityType
@@ -96,6 +97,17 @@ import com.mekari.project.ui.Formatting
 import com.mekari.project.ui.InlineMarkdown
 import com.mekari.project.ui.LocalAppScope
 import com.mekari.project.ui.RelativeTime
+import com.mekari.project.ui.attachments.AddAttachmentSheet
+import com.mekari.project.ui.attachments.AttachTarget
+import com.mekari.project.ui.attachments.AttachmentActions
+import com.mekari.project.ui.attachments.AttachmentFormat
+import com.mekari.project.ui.attachments.AttachmentIcons
+import com.mekari.project.ui.attachments.AttachmentViewer
+import com.mekari.project.ui.attachments.AttachmentsSection
+import com.mekari.project.ui.attachments.CommentAttachments
+import com.mekari.project.ui.attachments.ComposerChips
+import com.mekari.project.ui.attachments.ComposerLease
+import com.mekari.project.ui.attachments.rememberAttachmentActions
 import com.mekari.project.ui.components.Avatar
 import com.mekari.project.ui.components.CompletionCheckbox
 import com.mekari.project.ui.components.CompletionEffects
@@ -112,6 +124,9 @@ import com.mekari.project.ui.runAction
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneOffset
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 
 /**
  * The task (SPEC-ANDROID §5): every field edits in place and saves on done or focus loss, never per
@@ -124,13 +139,28 @@ fun TaskDetailScreen(
     taskId: String,
     onBack: () -> Unit,
     onOpenTask: (String) -> Unit,
-    inPane: Boolean = false
+    inPane: Boolean = false,
+    /** The server's origin, for "Open in browser" (task web URL). */
+    server: String? = null
 ) {
     val store = remember(taskId) { scope.taskDetail(taskId) }
     val state by store.state.collectAsStateWithLifecycle()
     val appScope = LocalAppScope.current
+    val files = scope.attachmentFiles
+    val filesState by files.state.collectAsStateWithLifecycle()
     LaunchedEffect(store) { store.load() }
     ErrorSnackbar(state.lastError) { store.clearError() }
+    ErrorSnackbar(filesState.lastError) { files.clearError() }
+
+    // Attachments (SPEC-ANDROID §8): the viewer, the Add sheet (task or composer), and the composer's notice.
+    var viewing by rememberSaveable(taskId) { mutableStateOf<String?>(null) }
+    var adding by rememberSaveable(taskId) { mutableStateOf<AttachTarget?>(null) }
+    var composerNotice by remember(taskId) { mutableStateOf<String?>(null) }
+    val actions = rememberAttachmentActions(store, files, server, state.task, scope.id) { viewing = it.id }
+    // Leaving the task discards the composer's drafts: on the full-screen route, when its back-stack entry goes
+    // (an entry-scoped ViewModel outlives rotation and opening a subtask, a link or a mention on top). The pane
+    // discards when the user picks another task or closes it (MainShell).
+    if (!inPane) viewModel(key = "composer.$taskId") { ComposerLease(store.composer, appScope) }
 
     Scaffold(
         modifier = Modifier.testTag(TestTags.TASK_DETAIL),
@@ -149,7 +179,11 @@ fun TaskDetailScreen(
             )
         },
         bottomBar = {
-            if (state.task != null) Composer(store.composer)
+            if (state.task != null) {
+                Composer(store.composer, notice = composerNotice, onNoticeShown = { composerNotice = null }) {
+                    adding = AttachTarget.COMMENT
+                }
+            }
         }
     ) { padding ->
         val task = state.task
@@ -175,7 +209,7 @@ fun TaskDetailScreen(
         val canEdit = state.canEdit
         val subtaskField = rememberAddFieldState()
         LazyColumn(
-            Modifier.fillMaxSize().padding(padding),
+            Modifier.fillMaxSize().padding(padding).testTag(TestTags.TASK_DETAIL_LIST),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)
         ) {
             item(key = "complete") {
@@ -207,6 +241,12 @@ fun TaskDetailScreen(
                     )
                 }
             } else {
+                item(key = "attachments") {
+                    AttachmentsSection(state.attachments, state.uploads, state.canAttach, actions) {
+                        adding =
+                            AttachTarget.TASK
+                    }
+                }
                 item(key = "subtasks.header") { SectionHeader("Subtasks") }
                 items(detail.subtasks, key = { "sub.${it.id}" }) { subtask ->
                     Row(
@@ -239,7 +279,50 @@ fun TaskDetailScreen(
                 HorizontalDivider(Modifier.padding(top = 8.dp))
                 SectionHeader("Comments and activity")
             }
-            items(state.stories, key = { it.key }) { story -> StoryRow(story, scope.me, store) }
+            items(state.stories, key = { it.key }) { story -> StoryRow(story, scope.me, store, actions) }
+        }
+    }
+
+    adding?.let { target ->
+        AddAttachmentSheet(
+            onDismiss = { adding = null },
+            onFiles = { sources ->
+                when (target) {
+                    AttachTarget.TASK -> sources.forEach(store::attach)
+                    AttachTarget.COMMENT -> {
+                        // Past 20 the rest are left out (a camera capture's temp file goes with them).
+                        val refused = sources.filterNot { store.composer.attach(it) }
+                        refused.forEach { runCatching { it.delete() } }
+                        composerNotice = if (refused.isEmpty()) {
+                            null
+                        } else {
+                            "${AttachmentFormat.commentFullMessage} ${if (refused.size == 1) "1 file was" else "${refused.size} files were"} left out."
+                        }
+                    }
+                }
+            },
+            onLink = { url, title ->
+                when (target) {
+                    AttachTarget.TASK -> store.addLink(url, title)
+                    AttachTarget.COMMENT -> store.composer.attachLink(url, title)
+                }
+            }
+        )
+    }
+    viewing?.let { id ->
+        val shown = state.attachments.firstOrNull { it.id == id }
+        // Gone (deleted here or elsewhere): the viewer closes.
+        if (shown == null) {
+            LaunchedEffect(id) { viewing = null }
+        } else {
+            AttachmentViewer(
+                shown,
+                state.attachments,
+                actions,
+                canDelete = store.canDelete(shown),
+                onShow = { viewing = it.id },
+                onClose = { viewing = null }
+            )
         }
     }
 }
@@ -525,9 +608,9 @@ private fun Followers(followers: List<UserSummary>, isFollowing: Boolean, store:
 }
 
 @Composable
-private fun StoryRow(story: Story, me: UserSummary, store: TaskDetailStore) {
+private fun StoryRow(story: Story, me: UserSummary, store: TaskDetailStore, actions: AttachmentActions) {
     when (story) {
-        is Comment -> CommentRow(story, mine = story.author.id == me.id, store)
+        is Comment -> CommentRow(story, mine = story.author.id == me.id, store, actions)
         is Activity -> Text(
             "${story.actor.name} ${activityText(story)} · ${RelativeTime.format(story.createdAt)}",
             style = MaterialTheme.typography.bodySmall,
@@ -549,11 +632,18 @@ private fun activityText(activity: Activity): String = when (activity.type) {
     ActivityType.RENAMED -> "renamed this task"
     ActivityType.PRIORITY_CHANGED -> "changed the priority"
     ActivityType.DESCRIPTION_CHANGED -> "changed the description"
+    ActivityType.ATTACHMENT_ADDED -> activityAttachmentName(activity)?.let { "attached “$it”" } ?: "added an attachment"
+    ActivityType.ATTACHMENT_REMOVED -> activityAttachmentName(activity)?.let { "removed “$it”" }
+        ?: "removed an attachment"
     else -> "updated this task"
 }
 
+/** The file name or link title an attachment activity carries (`data.name`). */
+private fun activityAttachmentName(activity: Activity): String? =
+    ((activity.data as? JsonObject)?.get("name") as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+
 @Composable
-private fun CommentRow(comment: Comment, mine: Boolean, store: TaskDetailStore) {
+private fun CommentRow(comment: Comment, mine: Boolean, store: TaskDetailStore, actions: AttachmentActions) {
     val appScope = LocalAppScope.current
     var menu by remember { mutableStateOf(false) }
     val accent = MaterialTheme.colorScheme.primary
@@ -570,7 +660,11 @@ private fun CommentRow(comment: Comment, mine: Boolean, store: TaskDetailStore) 
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            Text(InlineMarkdown.renderComment(comment.body, accent), style = MaterialTheme.typography.bodyMedium)
+            // Empty when the comment is only attachments (BE §13).
+            if (comment.body.isNotBlank()) {
+                Text(InlineMarkdown.renderComment(comment.body, accent), style = MaterialTheme.typography.bodyMedium)
+            }
+            CommentAttachments(comment.attachments, actions)
         }
         if (mine) {
             Box {
@@ -598,9 +692,12 @@ private object MentionDisplay : OutputTransformation {
     }
 }
 
-/** The comment box: the UI owns the text; the composer finds "@word" and sends. */
+/**
+ * The comment box: the UI owns the text; the composer finds "@word" and sends. Attachments: the paperclip opens
+ * the Add sheet for drafts, which show as chips above the field; Send waits for uploads (BE §13).
+ */
 @Composable
-private fun Composer(composer: CommentComposer) {
+private fun Composer(composer: CommentComposer, notice: String?, onNoticeShown: () -> Unit, onAttach: () -> Unit) {
     val appScope = LocalAppScope.current
     val field = rememberTextFieldState()
     val state by composer.state.collectAsStateWithLifecycle()
@@ -643,7 +740,24 @@ private fun Composer(composer: CommentComposer) {
                     HorizontalDivider()
                 }
             }
+            ComposerChips(state.attachments, state.sendingIds, composer)
+            if (notice != null) {
+                Text(
+                    notice,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp).testTag(TestTags.COMPOSER_NOTICE)
+                )
+                LaunchedEffect(state.attachments.isEmpty()) { if (state.attachments.isEmpty()) onNoticeShown() }
+            }
             Row(Modifier.padding(horizontal = 12.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(
+                    onClick = onAttach,
+                    enabled = state.hasRoomForAnother,
+                    modifier = Modifier.testTag(TestTags.COMPOSER_ATTACH)
+                ) {
+                    Icon(AttachmentIcons.AttachFile, contentDescription = "Attach to comment")
+                }
                 Box(
                     Modifier
                         .weight(1f)

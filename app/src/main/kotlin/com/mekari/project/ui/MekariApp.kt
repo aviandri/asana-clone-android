@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
@@ -70,6 +71,7 @@ import com.mekari.project.ui.screens.TaskDetailScreen
 import com.mekari.project.ui.screens.WorkspaceSheet
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.launch
 
 /** The app-level scope for holder actions (AppContainer.appScope): writes outlive the screen that started them. */
 val LocalAppScope = staticCompositionLocalOf<CoroutineScope> { MainScope() }
@@ -209,11 +211,31 @@ private fun MainShell(
         }
     }
 
+    // The pane's task is left when another is picked or the pane is closed: its composer's drafts go then (not
+    // when a fold moves it to the full-screen route, above).
+    val appScope = LocalAppScope.current
+    val leavePane: (String?) -> Unit = { next ->
+        val previous = paneTask
+        if (previous != null && previous != next) appScope.launch { scope.taskDetail(previous).composer.discard() }
+    }
+    // The pane has no back stack: replacing or closing its task leaves it. With attachments in the composer, that
+    // asks first ("Discard N attachments?"); drafts are never dropped silently.
+    var confirmingPane by remember { mutableStateOf<PaneChange?>(null) }
+    val changePane: (String?) -> Unit = { next ->
+        val previous = paneTask
+        val chips = previous?.let { scope.taskDetail(it).composer.state.value.attachments.size } ?: 0
+        if (previous != null && previous != next && chips > 0) {
+            confirmingPane = PaneChange(next, chips)
+        } else {
+            leavePane(next)
+            paneTask = next
+        }
+    }
     val openTask: (String) -> Unit = { id ->
         if (expanded &&
             selected == TopDestination.MY_TASKS
         ) {
-            paneTask = id
+            changePane(id)
         } else {
             nav.navigate(Routes.task(id))
         }
@@ -225,6 +247,37 @@ private fun MainShell(
         }
     }
     var quickAdd by rememberSaveable { mutableStateOf(false) }
+    confirmingPane?.let { change ->
+        AlertDialog(
+            onDismissRequest = { confirmingPane = null },
+            title = {
+                Text(
+                    if (change.attachments ==
+                        1
+                    ) {
+                        "Discard 1 attachment?"
+                    } else {
+                        "Discard ${change.attachments} attachments?"
+                    }
+                )
+            },
+            text = { Text("They're in the comment you haven't sent on this task.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmingPane = null
+                    leavePane(change.next)
+                    paneTask = change.next
+                }, modifier = Modifier.testTag(TestTags.PANE_DISCARD)) {
+                    Text("Discard", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    confirmingPane = null
+                }, modifier = Modifier.testTag(TestTags.PANE_KEEP)) { Text("Cancel") }
+            }
+        )
+    }
 
     // A resolved deep link or notification tap (AppContainer resolves it, switching workspace if needed, so this
     // is the NEW shell after a switch) and the launcher's quick-add shortcut: consumed once.
@@ -276,9 +329,14 @@ private fun MainShell(
                                 Box(Modifier.weight(1f).fillMaxHeight()) {
                                     paneTask?.let { id ->
                                         key(id) {
-                                            TaskDetailScreen(scope, id, onBack = {
-                                                paneTask = null
-                                            }, onOpenTask = openTask, inPane = true)
+                                            TaskDetailScreen(
+                                                scope,
+                                                id,
+                                                onBack = { changePane(null) },
+                                                onOpenTask = openTask,
+                                                inPane = true,
+                                                server = session.settings.serverUrl
+                                            )
                                         }
                                     } ?: NothingSelected()
                                 }
@@ -296,7 +354,13 @@ private fun MainShell(
         }
         composable(Routes.TASK) { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
-            TaskDetailScreen(scope, id, onBack = { nav.popBackStack() }, onOpenTask = { nav.navigate(Routes.task(it)) })
+            TaskDetailScreen(
+                scope,
+                id,
+                onBack = { nav.popBackStack() },
+                onOpenTask = { nav.navigate(Routes.task(it)) },
+                server = session.settings.serverUrl
+            )
         }
         composable(Routes.PROJECT) { entry ->
             val id = entry.arguments?.getString("id") ?: return@composable
@@ -324,3 +388,6 @@ private fun NothingSelected() {
         Text("Select a task to see its details", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+/** Replacing (or closing, [next] null) the pane's task while its composer holds [attachments] chips. */
+private data class PaneChange(val next: String?, val attachments: Int)

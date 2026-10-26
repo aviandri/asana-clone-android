@@ -17,6 +17,7 @@ import androidx.test.core.app.ActivityScenario
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import org.junit.Assert.assertEquals
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -30,6 +31,9 @@ class AddFieldFlowTest {
     @get:Rule
     val compose = createEmptyComposeRule()
 
+    @Before
+    fun freshSession() = freshFakeSession()
+
     private fun launchMyTasks(): ActivityScenario<MainActivity> {
         val intent = Intent(ApplicationProvider.getApplicationContext(), MainActivity::class.java)
             .putExtra(LaunchFlags.FAKE_API, true)
@@ -38,7 +42,7 @@ class AddFieldFlowTest {
         return scenario
     }
 
-    /** Any task checkbox that's still open (the fake session is shared by the tests in this process). */
+    /** Any task checkbox that's still open (each test starts from a fresh fake session: freshFakeSession). */
     private val openCheckbox = SemanticsMatcher("open task checkbox") { node ->
         val tag = node.config.getOrNull(SemanticsProperties.TestTag).orEmpty()
         tag.startsWith("task.checkbox.") &&

@@ -13,6 +13,7 @@ import com.mekari.project.core.DeepLink
 import com.mekari.project.ui.LocalAppScope
 import com.mekari.project.ui.MekariApp
 import com.mekari.project.ui.MekariProjectTheme
+import com.mekari.project.ui.attachments.LocalThumbnailLoader
 import com.mekari.project.ui.components.CompletionPrefs
 import com.mekari.project.ui.components.CompletionSound
 import com.mekari.project.ui.components.LocalCompletionPrefs
@@ -32,6 +33,7 @@ class MainActivity : ComponentActivity() {
             if (prefs.completionSound) LaunchedEffect(Unit) { CompletionSound.prepare(applicationContext) }
             CompositionLocalProvider(
                 LocalAppScope provides container.appScope,
+                LocalThumbnailLoader provides container.thumbnailLoader,
                 LocalCompletionPrefs provides CompletionPrefs(playSound = prefs.completionSound)
             ) {
                 MekariProjectTheme { MekariApp(session = session, container = container) }

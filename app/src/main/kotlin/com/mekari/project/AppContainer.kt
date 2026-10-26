@@ -19,17 +19,23 @@ import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
+import coil3.ImageLoader
+import com.mekari.project.core.AttachmentCache
 import com.mekari.project.core.DeepLink
+import com.mekari.project.core.FileUploadSource
 import com.mekari.project.core.LiveApi
 import com.mekari.project.core.ServerSettings
 import com.mekari.project.core.fake.FakeApi
 import com.mekari.project.feature.AppSession
+import com.mekari.project.feature.AttachmentUpload
 import com.mekari.project.feature.Auth
 import com.mekari.project.feature.DeepLinkResult
 import com.mekari.project.feature.FeaturePrefs
 import com.mekari.project.feature.LoadState
 import com.mekari.project.feature.NavigationTarget
 import com.mekari.project.feature.SignInError
+import com.mekari.project.ui.attachments.AttachmentShare
+import com.mekari.project.ui.attachments.Thumbnails
 import java.io.File
 import java.io.IOException
 import java.security.KeyStore
@@ -40,6 +46,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -149,20 +156,76 @@ class AppContainer(private val context: Context) {
 
     private var currentSession: AppSession? = null
 
+    /** Attachment downloads (SPEC-ANDROID §8): cacheDir/attachments, the FileProvider root, 500 MB LRU. */
+    val attachmentCacheDir: File get() = File(context.cacheDir, "attachments")
+
+    /** Coil for attachment thumbnails (memory + cacheDir/attachment-thumbs), cleared with every attachment wipe. */
+    val thumbnailLoader: ImageLoader by lazy { Thumbnails.imageLoader(context) }
+
+    /**
+     * After every wipe of the attachment cache (sign-out, lost workspace, start while signed out): Coil's caches
+     * and any camera captures (another user's photos mustn't stay).
+     */
+    private val attachmentsWiped: () -> Unit = {
+        Thumbnails.clear(thumbnailLoader, appScope)
+        // A capture a live upload still reads stays: losing one workspace mustn't break another's upload (its
+        // Retry). The session cancels the affected uploads before wiping, so a sign-out still clears them all.
+        val inUse = currentSession?.uploads?.state?.value.orEmpty().mapNotNullTo(mutableSetOf()) { upload ->
+            ((upload.source as? AttachmentUpload.Source.File)?.source as? FileUploadSource)?.file?.absoluteFile
+        }
+        appScope.launch(Dispatchers.IO) { AttachmentShare.clearCameraCaptures(context, keep = inUse) }
+    }
+
+    /**
+     * The session's own work (its coroutines and the follow* collectors). Production keeps one session for the
+     * process; instrumented tests replace it per test ([resetSessionForTests]), which cancels this.
+     */
+    private var sessionWork = SupervisorJob(appScope.coroutineContext[Job])
+    private val sessionScope: CoroutineScope get() = CoroutineScope(appScope.coroutineContext + sessionWork)
+    private var foregroundObserver: LifecycleEventObserver? = null
+
+    /**
+     * Instrumented tests share one process (and so this container): each test gets a fresh fake session instead
+     * of the previous test's state. Main thread only.
+     */
+    @VisibleForTesting
+    internal fun resetSessionForTests() {
+        foregroundObserver?.let { ProcessLifecycleOwner.get().lifecycle.removeObserver(it) }
+        foregroundObserver = null
+        sessionWork.cancel()
+        sessionWork = SupervisorJob(appScope.coroutineContext[Job])
+        currentSession = null
+        pendingLink.value = null
+        pendingTarget.value = null
+        linkNotice.value = null
+        pendingQuickAdd.value = false
+    }
+
     /** The one session. With the fake-API launch flag it runs on FakeApi + demo data (tests, device QA). */
     fun session(fakeApi: Boolean, signedIn: Boolean = true, fake: FakeApi? = null): AppSession {
         currentSession?.let { return it }
+        val work = sessionScope
+        // Captures a crash or process death left behind (an hour old: not one the camera just wrote for us).
+        appScope.launch(Dispatchers.IO) { AttachmentShare.clearCameraCaptures(context, olderThanMs = 60 * 60 * 1000L) }
         val session = if (fakeApi) {
             val api = fake ?: FakeApi(signedInAs = if (signedIn) "alice@example.com" else null)
-            AppSession.uiTest(signedIn, appScope, api)
+            AppSession.uiTest(signedIn, work, api, AttachmentCache(attachmentCacheDir), attachmentsWiped)
         } else {
             val tokens = tokenStore.forSource("app") // first touch restores (and may keep a blob)
             retryKeptSession()
-            AppSession(serverSettings, tokens, { url, store -> LiveApi(url, store) }, featurePrefs, appScope)
+            AppSession(
+                serverSettings,
+                tokens,
+                { url, store -> LiveApi(url, store) },
+                featurePrefs,
+                work,
+                attachmentCache = AttachmentCache(attachmentCacheDir),
+                onAttachmentsWiped = attachmentsWiped
+            )
         }
         currentSession = session
         liveSession = !fakeApi
-        appScope.launch { session.start() }
+        work.launch { session.start() }
         followForeground(session)
         followLinks(session)
         followInboxBaseline(session)
@@ -170,7 +233,7 @@ class AppContainer(private val context: Context) {
         // Background inbox checks: live sessions only (the fake API never schedules WorkManager). Decided from
         // auth: Restoring (every cold start) changes nothing, so the periodic job isn't reset or dropped.
         if (!fakeApi) {
-            appScope.launch {
+            work.launch {
                 session.state.map { it.auth }
                     .filter { it !is Auth.Restoring }
                     .map { it is Auth.SignedIn }
@@ -183,7 +246,7 @@ class AppContainer(private val context: Context) {
 
     /** Links resolve here, outside any shell: once signed in, resolve (switching workspace if needed), then hand off. */
     private fun followLinks(session: AppSession) {
-        appScope.launch {
+        sessionScope.launch {
             pendingLink.filterNotNull().collect { link ->
                 pendingLink.value = null
                 session.state.first { it.auth is Auth.SignedIn }
@@ -200,7 +263,7 @@ class AppContainer(private val context: Context) {
      * the "seen" set for that user + workspace, so items already seen in the Inbox are never notified later.
      */
     private fun followInboxBaseline(session: AppSession) {
-        appScope.launch {
+        sessionScope.launch {
             session.scope.collectLatest { scope ->
                 scope ?: return@collectLatest
                 scope.inbox.state
@@ -221,7 +284,7 @@ class AppContainer(private val context: Context) {
      * on screen it looks just like a lost session.
      */
     private fun followKeptSession(session: AppSession) {
-        appScope.launch {
+        sessionScope.launch {
             session.state.map { (it.auth is Auth.SignedOut) to it.signInError }
                 .distinctUntilChanged()
                 .collect { (signedOut, error) ->
@@ -266,20 +329,20 @@ class AppContainer(private val context: Context) {
      */
     private fun followForeground(session: AppSession) {
         val lifecycle = ProcessLifecycleOwner.get().lifecycle
-        lifecycle.addObserver(
-            LifecycleEventObserver { _, event ->
-                val scope = session.scope.value ?: return@LifecycleEventObserver
-                when (event) {
-                    Lifecycle.Event.ON_START -> {
-                        scope.poller.start()
-                        appScope.launch { scope.refresh() }
-                    }
-                    Lifecycle.Event.ON_STOP -> scope.poller.stop()
-                    else -> Unit
+        val observer = LifecycleEventObserver { _, event ->
+            val scope = session.scope.value ?: return@LifecycleEventObserver
+            when (event) {
+                Lifecycle.Event.ON_START -> {
+                    scope.poller.start()
+                    appScope.launch { scope.refresh() }
                 }
+                Lifecycle.Event.ON_STOP -> scope.poller.stop()
+                else -> Unit
             }
-        )
-        appScope.launch {
+        }
+        foregroundObserver = observer
+        lifecycle.addObserver(observer)
+        sessionScope.launch {
             session.scope.collect { scope ->
                 // The first load is the UI's (MainShell); here only the foreground poller.
                 if (scope != null && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) scope.poller.start()
