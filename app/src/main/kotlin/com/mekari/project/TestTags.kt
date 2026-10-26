@@ -95,6 +95,8 @@ object TestTags {
     const val COMPOSER_CHIPS = "composer.chips"
     const val COMPOSER_NOTICE = "composer.notice"
     const val COMMENT_ATTACHMENTS = "comment.attachments"
+    const val PANE_DISCARD = "pane.discard"
+    const val PANE_KEEP = "pane.keep"
     const val ATTACHMENT_VIEWER = "attachment.viewer"
     const val VIEWER_IMAGES = "viewer.images"
     const val VIEWER_PDF = "viewer.pdf"

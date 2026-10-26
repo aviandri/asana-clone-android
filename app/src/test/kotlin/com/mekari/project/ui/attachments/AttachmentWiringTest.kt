@@ -16,6 +16,7 @@ import com.mekari.project.MekariApplication
 import com.mekari.project.core.ApiEvent
 import com.mekari.project.core.fake.DemoIds
 import com.mekari.project.core.fake.FakeApi
+import com.mekari.project.core.fake.FakeEndpoint
 import com.mekari.project.feature.AppSession
 import com.mekari.project.feature.Auth
 import java.io.File
@@ -121,6 +122,30 @@ class AttachmentWiringTest {
         fake.emit(ApiEvent.WorkspaceLost(DemoIds.MEKARI))
         idleUntil("Coil wiped after losing the workspace") { isWiped(container.thumbnailLoader) }
         idleUntil("moved to another workspace") { session.scope.value?.id == DemoIds.ACME_PILOT }
+    }
+
+    @Test
+    fun losingAWorkspaceKeepsCapturesAnotherWorkspacesUploadStillReads() {
+        val container = AppContainer(context)
+        val fake = FakeApi()
+        val session = signedIn(container, fake)
+        // A task-level upload in Acme Pilot, parked in flight, reading a camera capture…
+        fake.hold(FakeEndpoint.UPLOAD_ATTACHMENT)
+        container.appScope.launch { session.switchWorkspace(DemoIds.ACME_PILOT) }
+        idleUntil("in Acme Pilot") { session.scope.value?.id == DemoIds.ACME_PILOT }
+        val pilotTask = fake.currentTasks().first { it.projectId == DemoIds.PILOT_PROJECT }.id
+        val capture = AttachmentShare.newCameraFile(context).apply { writeText("jpeg") }
+        session.scope.value!!.taskDetail(pilotTask).attach(AttachmentShare.cameraSource(capture))
+        idleUntil("the upload is live") { session.uploads.state.value.isNotEmpty() }
+        // …then back in Mekari, which is lost.
+        container.appScope.launch { session.switchWorkspace(DemoIds.MEKARI) }
+        idleUntil("back in Mekari") { session.scope.value?.id == DemoIds.MEKARI }
+        val stray = AttachmentShare.newCameraFile(context).apply { writeText("left over") }
+        fake.removeMembership(DemoIds.ALICE, DemoIds.MEKARI)
+        fake.emit(ApiEvent.WorkspaceLost(DemoIds.MEKARI))
+        idleUntil("the stray capture removed") { !stray.exists() }
+        assertTrue("Acme's upload still has its file", capture.exists())
+        assertTrue(session.uploads.state.value.isNotEmpty())
     }
 
     @Test

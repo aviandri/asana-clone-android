@@ -94,12 +94,18 @@ object AttachmentShare {
     }
 
     /**
-     * Camera captures left behind (a crash, process death mid-upload, or another user's before a sign-out).
-     * Every wipe of the attachment cache removes them all; startup removes those older than [olderThanMs],
-     * so a photo the camera just wrote for a recreated activity survives.
+     * Camera captures left behind (a crash, process death mid-upload, or another user's before a sign-out). Every
+     * wipe of the attachment cache removes them, except those in [keep] (a live upload still reads them); startup
+     * removes those older than [olderThanMs], so a photo the camera just wrote for a recreated activity survives.
      */
-    fun clearCameraCaptures(context: Context, olderThanMs: Long = 0, now: Long = System.currentTimeMillis()) {
+    fun clearCameraCaptures(
+        context: Context,
+        olderThanMs: Long = 0,
+        keep: Set<File> = emptySet(),
+        now: Long = System.currentTimeMillis()
+    ) {
         File(context.cacheDir, CAMERA_DIR).listFiles()?.forEach { file ->
+            if (file.absoluteFile in keep) return@forEach
             if (olderThanMs == 0L || now - file.lastModified() > olderThanMs) file.deleteRecursively()
         }
     }

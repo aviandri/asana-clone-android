@@ -186,4 +186,40 @@ class AttachmentFlowTest : AppFlowTestBase() {
             fake.currentAttachments().any { it.url == "https://example.com/draft" && it.draft }
         )
     }
+
+    /** The ≥ 840 dp pane has no back stack: replacing its task with attachments in the composer asks first. */
+    @Test
+    @Config(qualifiers = "w1280dp-h800dp")
+    fun replacingThePanesTaskWithAttachmentsAsksFirst() {
+        val fake = FakeApi()
+        launch(fake)
+        waitForTag(TestTags.taskRow(fixLogin))
+        compose.onNodeWithTag(TestTags.taskRow(fixLogin)).performClick()
+        waitForTag(TestTags.TASK_DETAIL_LIST)
+        compose.onNodeWithTag(TestTags.COMPOSER_ATTACH).performClick()
+        waitForTag(TestTags.ATTACH_LINK)
+        compose.onNodeWithTag(TestTags.ATTACH_LINK).performSemanticsAction(SemanticsActions.OnClick)
+        waitForTag(TestTags.LINK_URL)
+        compose.onNodeWithTag(TestTags.LINK_URL).performTextInput("https://example.com/pane")
+        compose.onNodeWithTag(TestTags.LINK_SUBMIT).performClick()
+        waitForTag(TestTags.COMPOSER_CHIPS)
+
+        val otherRow = SemanticsMatcher("another task's row") { node ->
+            val tag = node.config.getOrNull(SemanticsProperties.TestTag).orEmpty()
+            tag.startsWith("task.row.") && tag != TestTags.taskRow(fixLogin)
+        }
+        // Cancel keeps the task and its draft.
+        compose.onAllNodes(otherRow)[0].performClick()
+        waitForTag(TestTags.PANE_DISCARD)
+        compose.onNodeWithTag(TestTags.PANE_KEEP).performClick()
+        waitFor("the dialog closes") { isGone(TestTags.PANE_DISCARD) }
+        assertTrue("the draft stays", !isGone(TestTags.COMPOSER_CHIPS))
+        assertTrue(fake.currentAttachments().any { it.url == "https://example.com/pane" && it.draft })
+
+        // Discard replaces the task and deletes the draft.
+        compose.onAllNodes(otherRow)[0].performClick()
+        waitForTag(TestTags.PANE_DISCARD)
+        compose.onNodeWithTag(TestTags.PANE_DISCARD).performClick()
+        waitFor("the draft deleted") { fake.currentAttachments().none { it.url == "https://example.com/pane" } }
+    }
 }

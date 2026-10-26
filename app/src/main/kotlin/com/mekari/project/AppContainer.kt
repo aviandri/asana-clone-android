@@ -22,10 +22,12 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import coil3.ImageLoader
 import com.mekari.project.core.AttachmentCache
 import com.mekari.project.core.DeepLink
+import com.mekari.project.core.FileUploadSource
 import com.mekari.project.core.LiveApi
 import com.mekari.project.core.ServerSettings
 import com.mekari.project.core.fake.FakeApi
 import com.mekari.project.feature.AppSession
+import com.mekari.project.feature.AttachmentUpload
 import com.mekari.project.feature.Auth
 import com.mekari.project.feature.DeepLinkResult
 import com.mekari.project.feature.FeaturePrefs
@@ -166,7 +168,12 @@ class AppContainer(private val context: Context) {
      */
     private val attachmentsWiped: () -> Unit = {
         Thumbnails.clear(thumbnailLoader, appScope)
-        appScope.launch(Dispatchers.IO) { AttachmentShare.clearCameraCaptures(context) }
+        // A capture a live upload still reads stays: losing one workspace mustn't break another's upload (its
+        // Retry). The session cancels the affected uploads before wiping, so a sign-out still clears them all.
+        val inUse = currentSession?.uploads?.state?.value.orEmpty().mapNotNullTo(mutableSetOf()) { upload ->
+            ((upload.source as? AttachmentUpload.Source.File)?.source as? FileUploadSource)?.file?.absoluteFile
+        }
+        appScope.launch(Dispatchers.IO) { AttachmentShare.clearCameraCaptures(context, keep = inUse) }
     }
 
     /**

@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FloatingActionButton
@@ -217,12 +218,24 @@ private fun MainShell(
         val previous = paneTask
         if (previous != null && previous != next) appScope.launch { scope.taskDetail(previous).composer.discard() }
     }
+    // The pane has no back stack: replacing or closing its task leaves it. With attachments in the composer, that
+    // asks first ("Discard N attachments?"); drafts are never dropped silently.
+    var confirmingPane by remember { mutableStateOf<PaneChange?>(null) }
+    val changePane: (String?) -> Unit = { next ->
+        val previous = paneTask
+        val chips = previous?.let { scope.taskDetail(it).composer.state.value.attachments.size } ?: 0
+        if (previous != null && previous != next && chips > 0) {
+            confirmingPane = PaneChange(next, chips)
+        } else {
+            leavePane(next)
+            paneTask = next
+        }
+    }
     val openTask: (String) -> Unit = { id ->
         if (expanded &&
             selected == TopDestination.MY_TASKS
         ) {
-            leavePane(id)
-            paneTask = id
+            changePane(id)
         } else {
             nav.navigate(Routes.task(id))
         }
@@ -234,6 +247,37 @@ private fun MainShell(
         }
     }
     var quickAdd by rememberSaveable { mutableStateOf(false) }
+    confirmingPane?.let { change ->
+        AlertDialog(
+            onDismissRequest = { confirmingPane = null },
+            title = {
+                Text(
+                    if (change.attachments ==
+                        1
+                    ) {
+                        "Discard 1 attachment?"
+                    } else {
+                        "Discard ${change.attachments} attachments?"
+                    }
+                )
+            },
+            text = { Text("They're in the comment you haven't sent on this task.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmingPane = null
+                    leavePane(change.next)
+                    paneTask = change.next
+                }, modifier = Modifier.testTag(TestTags.PANE_DISCARD)) {
+                    Text("Discard", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    confirmingPane = null
+                }, modifier = Modifier.testTag(TestTags.PANE_KEEP)) { Text("Cancel") }
+            }
+        )
+    }
 
     // A resolved deep link or notification tap (AppContainer resolves it, switching workspace if needed, so this
     // is the NEW shell after a switch) and the launcher's quick-add shortcut: consumed once.
@@ -288,10 +332,7 @@ private fun MainShell(
                                             TaskDetailScreen(
                                                 scope,
                                                 id,
-                                                onBack = {
-                                                    leavePane(null)
-                                                    paneTask = null
-                                                },
+                                                onBack = { changePane(null) },
                                                 onOpenTask = openTask,
                                                 inPane = true,
                                                 server = session.settings.serverUrl
@@ -347,3 +388,6 @@ private fun NothingSelected() {
         Text("Select a task to see its details", color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }
+
+/** Replacing (or closing, [next] null) the pane's task while its composer holds [attachments] chips. */
+private data class PaneChange(val next: String?, val attachments: Int)
