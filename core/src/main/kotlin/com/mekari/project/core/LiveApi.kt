@@ -1,5 +1,6 @@
 package com.mekari.project.core
 
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
@@ -17,7 +18,9 @@ import kotlinx.serialization.DeserializationStrategy
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
@@ -26,9 +29,12 @@ import okhttp3.Callback
 import okhttp3.Headers
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 
@@ -55,7 +61,32 @@ class LiveApi(
     private val server: HttpUrl = serverUrl.toHttpUrl()
 
     /** Whatever client is passed, it never follows a redirect. */
-    private val client: OkHttpClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+    private val client: OkHttpClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        // Never replay a write: a retried POST (a link, a comment with attachmentIds) would be a duplicate, and its
+        // 400 would read as a definite rejection.
+        .retryOnConnectionFailure(false)
+        .build()
+
+    /**
+     * GETs keep OkHttp's stale-connection recovery: the pool keeps connections 5 min while nginx/Fastify close idle
+     * ones at about 75 s, and the first GET after a pause would otherwise fail as "Can't reach the server".
+     */
+    private val readClient: OkHttpClient = this.client.newBuilder().retryOnConnectionFailure(true).build()
+
+    /**
+     * Uploads and downloads: the server may sit quiet for a while after the last byte (storing, thumbnails), so a
+     * longer read timeout; never retried by OkHttp (a retried upload would be a duplicate).
+     */
+    private val transferClient: OkHttpClient = this.client.newBuilder()
+        .readTimeout(TRANSFER_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(TRANSFER_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .retryOnConnectionFailure(false)
+        .build()
+
+    /** Downloads (idempotent GETs): the transfer timeouts, with stale-connection recovery. */
+    private val downloadClient: OkHttpClient = transferClient.newBuilder().retryOnConnectionFailure(true).build()
 
     @Volatile private var workspaceId: String? = null
     private val eventChannel = Channel<ApiEvent>(Channel.UNLIMITED)
@@ -72,7 +103,7 @@ class LiveApi(
 
     override suspend fun health() {
         val url = server.newBuilder().addPathSegment("health").build()
-        val raw = perform(Request.Builder().url(url).get().build())
+        val raw = perform(Request.Builder().url(url).get().build(), readClient)
         if (raw.code !in 200..299) {
             throw ApiError(ApiError.Code("HTTP ${raw.code}"), raw.code, "Not a Mekari Project server")
         }
@@ -183,11 +214,15 @@ class LiveApi(
         return decodeWith(raw, "Story feed") { decodeStoryFeed(json, json.parseToJsonElement(it)) }
     }
 
-    override suspend fun addComment(taskId: String, body: String): Comment = call(
+    override suspend fun addComment(taskId: String, body: String, attachmentIds: List<String>): Comment = call(
         Method.POST,
         "/tasks/${id(taskId)}/comments",
         CommentSerializer,
-        buildJsonObject { put("body", body) }
+        buildJsonObject {
+            put("body", body)
+            // Without attachments the body is the v1 shape, so older servers keep working.
+            if (attachmentIds.isNotEmpty()) put("attachmentIds", JsonArray(attachmentIds.map(::JsonPrimitive)))
+        }
     )
 
     override suspend fun editComment(id: String, body: String): Comment =
@@ -215,6 +250,111 @@ class LiveApi(
 
     override suspend fun search(query: String): SearchResults =
         get("/search", SearchResults.serializer(), mapOf("q" to query))
+
+    // Attachments & links
+
+    override suspend fun uploadAttachment(
+        taskId: String,
+        source: UploadSource,
+        draft: Boolean,
+        progress: (TransferProgress) -> Unit
+    ): Attachment {
+        val size = source.size
+        if (size != null && size > AttachmentLimits.MAX_UPLOAD_BYTES) throw AttachmentLimits.tooLarge()
+        // Readable at all? (A revoked Uri grant fails here, as a validation error rather than "offline".)
+        withContext(Dispatchers.IO) {
+            try {
+                source.open().close()
+            } catch (_: Exception) {
+                throw ApiError(ApiError.Code.VALIDATION, null, "Can't read that file")
+            }
+        }
+        val body = SourceBody(source, size, progress)
+        val multipart = MultipartBody.Builder()
+            .setType(MultipartBody.FORM)
+            // OkHttp quotes the name as browsers do: UTF-8, with `"`, CR and LF escaped (%22, %0D, %0A). The BE
+            // reads `filename` as UTF-8 and ignores `filename*`.
+            .addFormDataPart("file", source.name, body)
+            .build()
+        val raw = try {
+            send(
+                Method.POST,
+                "/tasks/${id(taskId)}/attachments",
+                mapOf("draft" to if (draft) "true" else null),
+                requestBody = multipart,
+                http = transferClient
+            )
+        } catch (e: ApiError) {
+            // The stream turned out longer than allowed: the body stopped it, which surfaces as a transport error.
+            if (body.tooLarge) throw AttachmentLimits.tooLarge()
+            throw e
+        }
+        return decode(Attachment.serializer(), raw, "Attachment")
+    }
+
+    override suspend fun addLink(taskId: String, url: String, title: String?, draft: Boolean): Attachment = call(
+        Method.POST,
+        "/tasks/${id(taskId)}/attachments/link",
+        Attachment.serializer(),
+        buildJsonObject {
+            put("url", url)
+            title?.let { put("title", it) }
+            put("draft", draft)
+        }
+    )
+
+    override suspend fun attachment(id: String): Attachment = get("/attachments/${id(id)}", Attachment.serializer())
+
+    override suspend fun refreshLinkPreview(id: String): Attachment =
+        call(Method.POST, "/attachments/${id(id)}/refresh-preview", Attachment.serializer())
+
+    override suspend fun deleteAttachment(id: String) {
+        send(Method.DELETE, "/attachments/${id(id)}")
+    }
+
+    override suspend fun download(
+        path: String,
+        destination: File,
+        etag: String?,
+        progress: (TransferProgress) -> Unit
+    ): DownloadOutcome {
+        val (request, sentToken) = bytesRequest(path, etag)
+        currentCoroutineContext().ensureActive()
+        val raw = try {
+            downloadClient.newCall(request).awaitDownload(destination, progress)
+        } catch (_: IOException) {
+            currentCoroutineContext().ensureActive()
+            throw ApiError.transport()
+        }
+        if (raw.code == 304) return DownloadOutcome.NotModified
+        check(raw, Method.GET, path, sentToken, sentWorkspace = null)
+        return DownloadOutcome.Downloaded(raw.headers["ETag"])
+    }
+
+    override suspend fun attachmentData(path: String): ByteArray {
+        val (request, sentToken) = bytesRequest(path, null)
+        currentCoroutineContext().ensureActive()
+        val (raw, bytes) = try {
+            readClient.newCall(request).awaitBytes()
+        } catch (_: IOException) {
+            currentCoroutineContext().ensureActive()
+            throw ApiError.transport()
+        }
+        check(raw, Method.GET, path, sentToken, sentWorkspace = null)
+        return bytes
+    }
+
+    /** A GET of a server-given attachment path: the cookie, no workspace header (ID-addressed, BE §13). */
+    private fun bytesRequest(path: String, etag: String?): Pair<Request, String?> {
+        val url =
+            (server.toString().trimEnd('/') + path).takeIf { AttachmentLinks.isAttachmentPath(path) }?.toHttpUrlOrNull()
+                ?: throw ApiError(ApiError.Code.VALIDATION, null, "Not an attachment address")
+        val builder = Request.Builder().url(url).get().header("Accept", "*/*")
+        etag?.let { builder.header("If-None-Match", it) }
+        val sentToken = tokens.load()
+        if (sentToken != null) builder.header("Cookie", "${SessionCookie.NAME}=$sentToken")
+        return builder.build() to sentToken
+    }
 
     // Plumbing
 
@@ -256,14 +396,19 @@ class LiveApi(
         query: Map<String, String?> = emptyMap(),
         body: JsonElement? = null,
         /** The session to send: the stored one, read now, unless the caller pins it. */
-        token: () -> String? = tokens::load
+        token: () -> String? = tokens::load,
+        /** A non-JSON body (the multipart upload); wins over [body]. */
+        requestBody: RequestBody? = null,
+        http: OkHttpClient = if (method == Method.GET) readClient else client
     ): Raw {
         val url = server.newBuilder().addPathSegments("api/v1").apply {
             path.split('/').filter { it.isNotEmpty() }.forEach { addPathSegment(it) }
             query.toSortedMap().forEach { (key, value) -> if (value != null) addQueryParameter(key, value) }
         }.build()
         val builder = Request.Builder().url(url).header("Accept", "application/json")
-        val requestBody = body?.toString()?.toRequestBody(JSON_MEDIA)
+
+        @Suppress("NAME_SHADOWING")
+        val requestBody = requestBody ?: body?.toString()?.toRequestBody(JSON_MEDIA)
         when (method) {
             Method.GET -> builder.get()
             Method.POST -> builder.post(requestBody ?: EMPTY_BODY)
@@ -275,8 +420,17 @@ class LiveApi(
         val sentWorkspace = if (sendsWorkspaceHeader(path)) workspaceId else null
         if (sentWorkspace != null) builder.header(WORKSPACE_HEADER, sentWorkspace)
 
-        val raw = perform(builder.build())
-        if (raw.code in 200..299) return raw
+        val raw = perform(builder.build(), http)
+        check(raw, method, path, sentToken, sentWorkspace)
+        return raw
+    }
+
+    /**
+     * Throws for redirects and errors: a 401 for the token still stored ends the session, a scoped collection's
+     * 404 reports a lost workspace.
+     */
+    private fun check(raw: Raw, method: Method, path: String, sentToken: String?, sentWorkspace: String?) {
+        if (raw.code in 200..299) return
         if (raw.code in 300..399) {
             throw ApiError(
                 ApiError.Code("REDIRECT"),
@@ -298,10 +452,10 @@ class LiveApi(
     }
 
     /** Transport failures become [ApiError.transport]; cancellation stays `CancellationException`. */
-    private suspend fun perform(request: Request): Raw {
+    private suspend fun perform(request: Request, http: OkHttpClient = client): Raw {
         currentCoroutineContext().ensureActive()
         return try {
-            client.newCall(request).await()
+            http.newCall(request).await()
         } catch (_: IOException) {
             currentCoroutineContext().ensureActive()
             throw ApiError.transport()
@@ -330,6 +484,9 @@ class LiveApi(
 
     companion object {
         const val WORKSPACE_HEADER = "X-Workspace-Id"
+
+        /** Idle timeout for uploads and downloads (other requests keep the client's 30 s). */
+        const val TRANSFER_TIMEOUT_SECONDS = 300L
         private val JSON_MEDIA = "application/json".toMediaType()
         private val EMPTY_BODY = "".toRequestBody(null)
 

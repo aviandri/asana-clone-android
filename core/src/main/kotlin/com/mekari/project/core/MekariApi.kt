@@ -74,7 +74,8 @@ interface MekariApi {
     /** Oldest first; stories of an unknown kind are skipped. */
     suspend fun stories(taskId: String): List<Story>
 
-    suspend fun addComment(taskId: String, body: String): Comment
+    /** [attachmentIds]: drafts I uploaded on this task (≤ 20); [body] may then be empty. */
+    suspend fun addComment(taskId: String, body: String, attachmentIds: List<String> = emptyList()): Comment
 
     suspend fun editComment(id: String, body: String): Comment
 
@@ -89,6 +90,45 @@ interface MekariApi {
     suspend fun markAllRead()
 
     suspend fun search(query: String): SearchResults
+
+    // Attachments & links (BE §13)
+
+    /**
+     * Streams [source] as one multipart part `file` (never fully in memory). [draft] sends `?draft=true` (the
+     * comment composer). Over [AttachmentLimits.MAX_UPLOAD_BYTES] → PAYLOAD_TOO_LARGE without a request (also
+     * when the stream turns out longer than its declared size). Cancel the coroutine to cancel the upload.
+     * [progress] is called on an I/O thread.
+     */
+    suspend fun uploadAttachment(
+        taskId: String,
+        source: UploadSource,
+        draft: Boolean,
+        progress: (TransferProgress) -> Unit = {}
+    ): Attachment
+
+    suspend fun addLink(taskId: String, url: String, title: String?, draft: Boolean): Attachment
+
+    suspend fun attachment(id: String): Attachment
+
+    suspend fun refreshLinkPreview(id: String): Attachment
+
+    suspend fun deleteAttachment(id: String)
+
+    /**
+     * GETs a server-relative attachment path (`contentPath`, `thumbnailPath(size)`…) into [destination],
+     * replacing it only once a 200 body is complete. With [etag], sends `If-None-Match`; a 304 leaves
+     * [destination] alone. Paths outside `/api/v1/attachments/` are refused (VALIDATION) without a request.
+     * [destination]'s folder must exist (the download never creates it).
+     */
+    suspend fun download(
+        path: String,
+        destination: java.io.File,
+        etag: String? = null,
+        progress: (TransferProgress) -> Unit = {}
+    ): DownloadOutcome
+
+    /** Small bytes in memory (a link icon or image, a thumbnail). Same path rule as [download]. */
+    suspend fun attachmentData(path: String): ByteArray
 }
 
 sealed interface ApiEvent {

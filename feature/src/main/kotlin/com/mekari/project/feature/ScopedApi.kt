@@ -1,7 +1,9 @@
 package com.mekari.project.feature
 
 import com.mekari.project.core.ApiEvent
+import com.mekari.project.core.Attachment
 import com.mekari.project.core.Comment
+import com.mekari.project.core.DownloadOutcome
 import com.mekari.project.core.InboxPage
 import com.mekari.project.core.Me
 import com.mekari.project.core.MekariApi
@@ -16,7 +18,10 @@ import com.mekari.project.core.Story
 import com.mekari.project.core.TaskChanges
 import com.mekari.project.core.TaskDetail
 import com.mekari.project.core.TaskItem
+import com.mekari.project.core.TransferProgress
+import com.mekari.project.core.UploadSource
 import com.mekari.project.core.Workspace
+import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 
@@ -73,7 +78,8 @@ internal class ScopedApi(private val api: MekariApi) : MekariApi {
     override suspend fun removeFollower(taskId: String, userId: String): TaskDetail =
         call { api.removeFollower(taskId, userId) }
     override suspend fun stories(taskId: String): List<Story> = call { api.stories(taskId) }
-    override suspend fun addComment(taskId: String, body: String): Comment = call { api.addComment(taskId, body) }
+    override suspend fun addComment(taskId: String, body: String, attachmentIds: List<String>): Comment =
+        call { api.addComment(taskId, body, attachmentIds) }
     override suspend fun editComment(id: String, body: String): Comment = call { api.editComment(id, body) }
     override suspend fun deleteComment(id: String) = call { api.deleteComment(id) }
     override suspend fun notifications(unreadOnly: Boolean, limit: Int): InboxPage =
@@ -81,4 +87,22 @@ internal class ScopedApi(private val api: MekariApi) : MekariApi {
     override suspend fun markRead(notificationId: String) = call { api.markRead(notificationId) }
     override suspend fun markAllRead() = call { api.markAllRead() }
     override suspend fun search(query: String): SearchResults = call { api.search(query) }
+    override suspend fun uploadAttachment(
+        taskId: String,
+        source: UploadSource,
+        draft: Boolean,
+        progress: (TransferProgress) -> Unit
+    ): Attachment = call { api.uploadAttachment(taskId, source, draft, progress) }
+    override suspend fun addLink(taskId: String, url: String, title: String?, draft: Boolean): Attachment =
+        call { api.addLink(taskId, url, title, draft) }
+    override suspend fun attachment(id: String): Attachment = call { api.attachment(id) }
+    override suspend fun refreshLinkPreview(id: String): Attachment = call { api.refreshLinkPreview(id) }
+    override suspend fun deleteAttachment(id: String) = call { api.deleteAttachment(id) }
+    override suspend fun download(
+        path: String,
+        destination: File,
+        etag: String?,
+        progress: (TransferProgress) -> Unit
+    ): DownloadOutcome = call { api.download(path, destination, etag, progress) }
+    override suspend fun attachmentData(path: String): ByteArray = call { api.attachmentData(path) }
 }

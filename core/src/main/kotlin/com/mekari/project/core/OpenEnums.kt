@@ -134,9 +134,15 @@ value class ActivityType(override val raw: String) : OpenEnum {
         val RENAMED = ActivityType("RENAMED")
         val PRIORITY_CHANGED = ActivityType("PRIORITY_CHANGED")
         val DESCRIPTION_CHANGED = ActivityType("DESCRIPTION_CHANGED")
+
+        /** BE §13, task-level only. `data`: `{attachmentId, kind, name}`. */
+        val ATTACHMENT_ADDED = ActivityType("ATTACHMENT_ADDED")
+
+        /** `data`: `{kind, name}`. */
+        val ATTACHMENT_REMOVED = ActivityType("ATTACHMENT_REMOVED")
         val known = listOf(
             CREATED, COMPLETED, REOPENED, ASSIGNED, UNASSIGNED, DUE_DATE_CHANGED, MOVED_SECTION, RENAMED,
-            PRIORITY_CHANGED, DESCRIPTION_CHANGED
+            PRIORITY_CHANGED, DESCRIPTION_CHANGED, ATTACHMENT_ADDED, ATTACHMENT_REMOVED
         )
     }
 }

@@ -2,6 +2,8 @@ package com.mekari.project.feature
 
 import com.mekari.project.core.ApiError
 import com.mekari.project.core.ApiEvent
+import com.mekari.project.core.Attachment
+import com.mekari.project.core.AttachmentCache
 import com.mekari.project.core.DeepLink
 import com.mekari.project.core.InMemoryServerSettings
 import com.mekari.project.core.InMemoryTokenStore
@@ -41,7 +43,10 @@ class WorkspaceScope internal constructor(
     parent: CoroutineScope,
     clock: Clock,
     prefs: FeaturePrefs,
-    cooldown: CelebrationCooldown
+    cooldown: CelebrationCooldown,
+    private val uploads: AttachmentUploads,
+    private val slots: UploadSlots,
+    cache: AttachmentCache
 ) {
     /** Every request from this scope; refused once the scope is closed (see [ScopedApi]). */
     private val api = ScopedApi(sessionApi)
@@ -62,6 +67,9 @@ class WorkspaceScope internal constructor(
     val quickAdd = QuickAddModel(api, me, myTasks)
     val completionFeedback = CompletionFeedback(prefs, cooldown) { api.closed }
 
+    /** Downloads for this workspace (through the session's cache). */
+    val attachmentFiles = AttachmentFiles(api, cache, coroutineScope) { api.closed }
+
     private val projectStores = mutableMapOf<String, ProjectStore>()
     private val detailStores = mutableMapOf<String, TaskDetailStore>()
 
@@ -80,7 +88,18 @@ class WorkspaceScope internal constructor(
 
     /** One store per task; its role is seeded from [projects]. */
     fun taskDetail(id: String): TaskDetailStore = detailStores.getOrPut(id) {
-        TaskDetailStore(api, tasks, id, me, workspace.myRole, { projectId -> knownProject(projectId) }, coroutineScope)
+        TaskDetailStore(
+            api,
+            tasks,
+            id,
+            me,
+            workspace.myRole,
+            { projectId -> knownProject(projectId) },
+            coroutineScope,
+            uploads,
+            slots,
+            workspace.id
+        )
     }
 
     fun userSearch(): UserSearch = UserSearch(api, coroutineScope)
@@ -110,7 +129,21 @@ class WorkspaceScope internal constructor(
     internal fun close() {
         api.close()
         poller.stop()
+        detailStores.values.forEach { it.close() }
         coroutineScope.cancel()
+    }
+
+    /** A task-level upload finished (possibly after leaving its task): show it if the task is loaded here. */
+    internal fun attachmentUploaded(attachment: Attachment) {
+        if (attachment.workspaceId != id || isClosed) return
+        val store = detailStores[attachment.taskId]
+        if (store != null) {
+            store.attachmentAdded(attachment)
+        } else {
+            tasks.editAttachments(attachment.taskId, bumpedAt = attachment.createdAt) { list ->
+                list.filterNot { it.id == attachment.id } + attachment
+            }
+        }
     }
 
     private fun knownProject(projectId: String) = projects.state.value.projects.firstOrNull { it.id == projectId }
@@ -179,7 +212,11 @@ class AppSession(
     private val apiFactory: (serverUrl: String, tokens: TokenStore) -> MekariApi,
     private val prefs: FeaturePrefs,
     private val appScope: CoroutineScope,
-    private val clock: Clock = Clock.systemDefaultZone()
+    private val clock: Clock = Clock.systemDefaultZone(),
+    /** Downloads on disk. The app passes `cacheDir/attachments` (the FileProvider path); the default is a temp folder. */
+    val attachmentCache: AttachmentCache = AttachmentCache.scratch(),
+    /** After every wipe of [attachmentCache] (sign-out, lost access): the app clears Coil's memory and disk caches too. */
+    private val onAttachmentsWiped: () -> Unit = {}
 ) {
     private val _state = MutableStateFlow(SessionState())
     private val _scope = MutableStateFlow<WorkspaceScope?>(null)
@@ -196,6 +233,20 @@ class AppSession(
 
     /** The celebration rate limit, kept across workspace switches. */
     private val celebrationCooldown = CelebrationCooldown(appScope)
+
+    /** At most 3 uploads, links and refreshes at once across the app (A12). */
+    internal val uploadSlots = UploadSlots()
+
+    /** Task-level uploads, kept across leaving the task and workspace switches (keyed by task). */
+    val uploads = AttachmentUploads(uploadSlots, appScope) { api }
+
+    /** The last wipe a sign-out started (sign-out awaits it; tests too). */
+    internal var pendingWipe: Job? = null
+        private set
+
+    init {
+        uploads.onFinished = { attachment -> _scope.value?.attachmentUploaded(attachment) }
+    }
 
     /** Jobs queued and not finished, and jobs skipped as superseded (tests pin the queue with these). */
     internal var queuedJobs = 0
@@ -226,6 +277,7 @@ class AppSession(
         } catch (e: Exception) {
             // Offline at launch keeps the token for next time.
             val transport = e.asApiError().code == ApiError.Code.TRANSPORT
+            wipeAttachments()
             _state.update {
                 it.copy(auth = Auth.SignedOut, signInError = if (transport) SignInError.Transport else null)
             }
@@ -285,6 +337,7 @@ class AppSession(
     suspend fun signOut() {
         val api = api
         endSession()
+        pendingWipe?.join()
         api?.logout()
     }
 
@@ -328,7 +381,16 @@ class AppSession(
 
     // Internals
 
-    private fun signedOut() = _state.update { it.copy(auth = Auth.SignedOut) }
+    /** Signed out at start: nothing from a previous session stays on disk. */
+    private suspend fun signedOut() {
+        wipeAttachments()
+        _state.update { it.copy(auth = Auth.SignedOut) }
+    }
+
+    private suspend fun wipeAttachments() {
+        attachmentCache.wipe()
+        onAttachmentsWiped()
+    }
 
     /**
      * Queues a workspace job after the ones already queued (the Mutex is fair: FIFO). A job is skipped
@@ -388,6 +450,9 @@ class AppSession(
         val current = _state.value.current
         if (workspaceId != current?.id) return
         val lostName = current.name
+        // Nothing from the lost workspace stays on disk or keeps uploading, whatever /auth/me says next.
+        uploads.cancelWorkspace(workspaceId)
+        wipeAttachments()
         try {
             val me = api.me()
             if (request != switchRequest) return
@@ -421,7 +486,18 @@ class AppSession(
         _scope.value?.close()
         api.setWorkspace(me.currentWorkspace?.id)
         val scope = me.currentWorkspace?.let {
-            WorkspaceScope(api, it, me.user.summary, appScope, clock, prefs, celebrationCooldown)
+            WorkspaceScope(
+                api,
+                it,
+                me.user.summary,
+                appScope,
+                clock,
+                prefs,
+                celebrationCooldown,
+                uploads,
+                uploadSlots,
+                attachmentCache
+            )
         }
         _scope.value = scope
         _state.update {
@@ -453,6 +529,8 @@ class AppSession(
         _scope.value?.close()
         _scope.value = null
         _state.update { it.copy(auth = Auth.SignedOut, current = null, generation = it.generation + 1) }
+        uploads.cancelAll()
+        pendingWipe = appScope.launch { wipeAttachments() }
     }
 
     companion object {
@@ -477,14 +555,23 @@ class AppSession(
         /**
          * The fake-API launch flag: FakeApi with in-memory stores. With signedIn = false, start() ends in
          * SignedOut and sign-in works with any server URL and password123. Pass your own [fake] to drive
-         * failNext/hold/release from tests. The caller runs start().
+         * failNext/hold/release from tests, and the app's cache and wipe hook (Coil) to test the wipe paths. The caller
+         * runs start().
          */
         fun uiTest(
             signedIn: Boolean,
             appScope: CoroutineScope,
-            fake: FakeApi = FakeApi(signedInAs = if (signedIn) "alice@example.com" else null)
-        ): AppSession = AppSession(InMemoryServerSettings(DEMO_SERVER), InMemoryTokenStore(), { _, _ ->
-            fake
-        }, InMemoryFeaturePrefs(), appScope)
+            fake: FakeApi = FakeApi(signedInAs = if (signedIn) "alice@example.com" else null),
+            attachmentCache: AttachmentCache = AttachmentCache.scratch(),
+            onAttachmentsWiped: () -> Unit = {}
+        ): AppSession = AppSession(
+            InMemoryServerSettings(DEMO_SERVER),
+            InMemoryTokenStore(),
+            { _, _ -> fake },
+            InMemoryFeaturePrefs(),
+            appScope,
+            attachmentCache = attachmentCache,
+            onAttachmentsWiped = onAttachmentsWiped
+        )
     }
 }
